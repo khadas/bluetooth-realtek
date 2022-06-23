@@ -29,6 +29,7 @@
 #include <linux/skbuff.h>
 #include <linux/usb.h>
 #include <linux/dcache.h>
+#include <linux/reboot.h>
 #include <net/sock.h>
 #include <asm/unaligned.h>
 
@@ -1510,6 +1511,34 @@ int rtkbt_pm_notify(struct notifier_block *notifier,
 	return NOTIFY_DONE;
 }
 
+int rtkbt_shutdown_notify(struct notifier_block *notifier,
+		    ulong pm_event, void *unused)
+{
+	struct btusb_data *data;
+	struct usb_device *udev;
+	struct usb_interface *intf;
+	struct hci_dev *hdev;
+	/* int err; */
+
+	data = container_of(notifier, struct btusb_data, shutdown_notifier);
+	udev = data->udev;
+	intf = data->intf;
+	hdev = data->hdev;
+
+	RTKBT_DBG("%s: pm_event %ld", __func__, pm_event);
+	switch (pm_event) {
+	case SYS_POWER_OFF:
+	case SYS_RESTART:
+		RTKBT_DBG("%s: power off", __func__);
+		set_scan(intf);
+		break;
+
+	default:
+		break;
+	}
+
+	return NOTIFY_DONE;
+}
 
 static int btusb_probe(struct usb_interface *intf,
 		       const struct usb_device_id *id)
@@ -1662,6 +1691,9 @@ static int btusb_probe(struct usb_interface *intf,
 	data->pm_notifier.notifier_call = rtkbt_pm_notify;
 	register_pm_notifier(&data->pm_notifier);
 
+	/* Register POWER-OFF notifier */
+	data->shutdown_notifier.notifier_call = rtkbt_shutdown_notify;
+	register_reboot_notifier(&data->shutdown_notifier);
 #ifdef BTCOEX
 	rtk_btcoex_probe(hdev);
 #endif
@@ -1688,6 +1720,7 @@ static void btusb_disconnect(struct usb_interface *intf)
 
 	/* Un-register PM notifier */
 	unregister_pm_notifier(&data->pm_notifier);
+	unregister_reboot_notifier(&data->shutdown_notifier);
 
 	/*******************************/
 	patch_remove(intf);

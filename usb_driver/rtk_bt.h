@@ -146,5 +146,6 @@ struct btusb_data {
 	int (*recv_bulk) (struct btusb_data * data, void *buffer, int count);
 #endif
 	struct notifier_block pm_notifier;
+	struct notifier_block shutdown_notifier;
 	void *context;
 };
