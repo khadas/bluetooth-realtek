@@ -40,7 +40,7 @@
 #define BTCOEX
 
 /* Send host sleep notification to Controller */
-#define WOBT_NOTIFY		0	/* 1  enable; 0  disable */
+#define WOBT_NOTIFY		1	/* 1  enable; 0  disable */
 
 /* Send LE whitelist only for Background scan parameters */
 #define WOBT_NOTIFY_BG_SCAN_LE_WHITELIST_ONLY	(0 * WOBT_NOTIFY)	/* 1  enable; 0  disable */
@@ -48,6 +48,11 @@
 /* RTKBT Power-on Whitelist for sideband wake-up by LE Advertising from Remote.
 * Note that it's necessary to apply TV FW Patch. */
 #define RTKBT_TV_POWERON_WHITELIST	(0 * WOBT_NOTIFY)	/* 1  enable; 0  disable */
+
+/* RTKBT Power-on Data Filter for Manufacturer field */
+/* Note that please edit the datafilter in
+ *   rtkbt_set_le_device_poweron_data_filter() of hci_ldisc.c */
+#define RTKBT_TV_POWERON_DATA_FILTER	(0 * WOBT_NOTIFY)	/* 1  enable; 0  disable */
 
 /* Ioctls */
 #define HCIUARTSETPROTO		_IOW('U', 200, int)
@@ -109,6 +114,7 @@ struct hci_uart {
 
 #if WOBT_NOTIFY
 	struct notifier_block pm_notify_block;
+	struct notifier_block shutdown_notifier;
 #endif
 };
 

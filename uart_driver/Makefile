@@ -12,6 +12,6 @@ all:
 	$(MAKE) -C ${KERNEL_SRC} M=${M} ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} modules
 
 clean:
-	rm -rf *.o *.mod.c *.mod.o *.ko *.symvers *.order *.a
+	rm -rf *.o *.mod.c *.mod.o *.ko *.symvers *.order *.a *.cmd
 
 endif
