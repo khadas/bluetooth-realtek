@@ -36,7 +36,7 @@
 #include "rtk_bt.h"
 #include "rtk_misc.h"
 
-#define VERSION "3.1.156d109.20220110-123626"
+#define VERSION "3.1.6fd4e69.20220818-105856"
 
 #ifdef BTCOEX
 #include "rtk_coex.h"
@@ -45,13 +45,12 @@
 #ifdef RTKBT_SWITCH_PATCH
 #include <linux/semaphore.h>
 #include <net/bluetooth/hci_core.h>
-DEFINE_SEMAPHORE(switch_sem);
+static DEFINE_SEMAPHORE(switch_sem);
 #endif
 
 #if HCI_VERSION_CODE >= KERNEL_VERSION(3, 7, 1)
 static bool reset = 0;
 #endif
-int set_scan(struct usb_interface *intf);
 
 static struct usb_driver btusb_driver;
 static struct usb_device_id btusb_table[] = {
@@ -749,19 +748,16 @@ static void btusb_isoc_tx_complete(struct urb *urb)
 	struct sk_buff *skb = urb->context;
 	struct hci_dev *hdev = (struct hci_dev *)skb->dev;
 
-	//RTKBT_DBG("%s: urb %p status %d count %d",
-	//__func__, urb, urb->status, urb->actual_length);
+	RTKBT_DBG("%s: urb %p status %d count %d", __func__,
+			urb, urb->status, urb->actual_length);
 
-	if (skb && hdev) {
-		if (!test_bit(HCI_RUNNING, &hdev->flags))
-			goto done;
+	if (!test_bit(HCI_RUNNING, &hdev->flags))
+		goto done;
 
-		if (!urb->status)
-			hdev->stat.byte_tx += urb->transfer_buffer_length;
-		else
-			hdev->stat.err_tx++;
-	} else
-		RTKBT_ERR("%s: skb 0x%p hdev 0x%p", __func__, skb, hdev);
+	if (!urb->status)
+		hdev->stat.byte_tx += urb->transfer_buffer_length;
+	else
+		hdev->stat.err_tx++;
 
 done:
 	kfree(urb->setup_packet);
@@ -784,7 +780,7 @@ static int btusb_open(struct hci_dev *hdev)
 	/*******************************/
 	if (0 == atomic_read(&hdev->promisc)) {
 		RTKBT_ERR("btusb_open hdev->promisc ==0");
-		err = -1;
+		//err = -1;
 		//goto failed;
 	}
 
@@ -793,7 +789,10 @@ static int btusb_open(struct hci_dev *hdev)
 		goto failed;
 	/*******************************/
 
-	RTKBT_INFO("%s set HCI_RUNNING", __func__);
+	RTKBT_INFO("%s set HCI UP RUNNING", __func__);
+	if (test_and_set_bit(HCI_UP, &hdev->flags))
+		goto done;
+
 	if (test_and_set_bit(HCI_RUNNING, &hdev->flags))
 		goto done;
 
@@ -931,7 +930,7 @@ static int btusb_flush(struct hci_dev *hdev)
 	return 0;
 }
 
-const char pkt_ind[][8] = {
+static const char pkt_ind[][8] = {
 	[HCI_COMMAND_PKT] = "cmd",
 	[HCI_ACLDATA_PKT] = "acl",
 	[HCI_SCODATA_PKT] = "sco",
@@ -1348,7 +1347,7 @@ static int rtkbt_lookup_le_device_poweron_whitelist(struct hci_dev *hdev,
 }
 #endif
 
-int rtkbt_pm_notify(struct notifier_block *notifier,
+static int rtkbt_pm_notify(struct notifier_block *notifier,
 		    ulong pm_event, void *unused)
 {
 	struct btusb_data *data;
@@ -1437,15 +1436,7 @@ int rtkbt_pm_notify(struct notifier_block *notifier,
 		kfree(cmd);
 		msleep(100); /* From FW colleague's recommendation */
 		result = download_lps_patch(intf);
-
-
-		/* Send special vendor commands */
 #endif
-		/* Tell the controller to wake up host if received special
-		 * advertising packet
-		 */
-		set_scan(intf);
-
 
 #ifdef RTKBT_TV_POWERON_WHITELIST
 		result = rtkbt_lookup_le_device_poweron_whitelist(hdev, udev);
@@ -1453,6 +1444,17 @@ int rtkbt_pm_notify(struct notifier_block *notifier,
 			RTKBT_ERR("rtkbt_lookup_le_device_poweron_whitelist error: %d", result);
 		}
 #endif
+
+#if defined RTKBT_SUSPEND_WAKEUP || defined RTKBT_SWITCH_PATCH
+#ifdef RTKBT_POWERKEY_WAKEUP
+		/* Tell the controller to wake up host if received special
+		 * advertising packet
+		 */
+		set_scan(intf);
+#endif
+		/* Send special vendor commands */
+#endif
+
 		break;
 
 	case PM_POST_SUSPEND:
@@ -1486,7 +1488,7 @@ int rtkbt_pm_notify(struct notifier_block *notifier,
 		}
 #endif
 
-#if BTUSB_RPM
+#ifdef BTUSB_RPM
 		RTKBT_DBG("%s: Re-enable autosuspend", __func__);
 		/* pm_runtime_use_autosuspend(&udev->dev);
 		 * pm_runtime_set_autosuspend_delay(&udev->dev, 2000);
@@ -1511,7 +1513,7 @@ int rtkbt_pm_notify(struct notifier_block *notifier,
 	return NOTIFY_DONE;
 }
 
-int rtkbt_shutdown_notify(struct notifier_block *notifier,
+static int rtkbt_shutdown_notify(struct notifier_block *notifier,
 		    ulong pm_event, void *unused)
 {
 	struct btusb_data *data;
@@ -1529,8 +1531,10 @@ int rtkbt_shutdown_notify(struct notifier_block *notifier,
 	switch (pm_event) {
 	case SYS_POWER_OFF:
 	case SYS_RESTART:
+#ifdef RTKBT_SHUTDOWN_WAKEUP
 		RTKBT_DBG("%s: power off", __func__);
 		set_scan(intf);
+#endif
 		break;
 
 	default:
@@ -1561,7 +1565,7 @@ static int btusb_probe(struct usb_interface *intf,
 	flag1 = device_can_wakeup(&udev->dev);
 	flag2 = device_may_wakeup(&udev->dev);
 	RTKBT_DBG("btusb_probe can_wakeup %x, may wakeup %x", flag1, flag2);
-#if BTUSB_WAKEUP_HOST
+#ifdef BTUSB_WAKEUP_HOST
 	device_wakeup_enable(&udev->dev);
 #endif
 	//device_wakeup_enable(&udev->dev);
@@ -1902,7 +1906,8 @@ static struct usb_driver btusb_driver = {
 #ifdef CONFIG_PM
 	.suspend = btusb_suspend,
 	.resume = btusb_resume,
-#ifdef RTKBT_SWITCH_PATCH
+#if defined RTKBT_SWITCH_PATCH || defined RTKBT_SUSPEND_WAKEUP || defined \
+	RTKBT_SHUTDOWN_WAKEUP
 	.reset_resume = btusb_resume,
 #endif
 #endif
