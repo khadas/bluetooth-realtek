@@ -509,7 +509,7 @@ static void util_hexdump(const u8 *buf, size_t len)
 	}
 }
 
-#if defined RTKBT_SWITCH_PATCH || defined RTKBT_TV_POWERON_WHITELIST
+#if defined RTKBT_SWITCH_PATCH || defined RTKBT_TV_POWERON_WHITELIST  || defined RTKBT_SWITCH_WAKEUP
 int __rtk_send_hci_cmd(struct usb_device *udev, u8 *buf, u16 size)
 {
 	int result;
@@ -901,6 +901,115 @@ patch_end:
 	RTKBT_DBG("Rtk patch end %d", ret_val);
 	return ret_val;
 }
+
+#ifdef RTKBT_SWITCH_WAKEUP
+/* * -1: error
+ * 0: download patch successfully
+ * >0: patch already exists  */
+int download_pkw_patch(struct usb_interface *intf)
+{
+	dev_data *dev_entry;
+	patch_info *pinfo;
+	xchange_data *xdata = NULL;
+	uint8_t *fw_buf;
+	int result;
+	char name1[64];
+	char *origin_name1;
+	char name2[64];
+	char *origin_name2;
+	int max_patch_size = 0;
+
+	RTKBT_DBG("Download power key wakeup Patch start");
+	dev_entry = dev_data_find(intf);
+	if (!dev_entry) {
+		RTKBT_ERR("No Patch found");
+		return -1;
+	}
+
+	xdata = kzalloc(sizeof(xchange_data), GFP_KERNEL);
+	if (!xdata) {
+		RTKBT_ERR("Couldn't alloc xdata");
+		return -1;
+	}
+
+	init_xdata(xdata, dev_entry);
+
+	result = check_fw_version(xdata);
+	if (result < 0) {
+		RTKBT_ERR("Failed to get Local Version Information");
+		goto patch_end;
+
+	} else if (result > 0) {
+		RTKBT_DBG("Firmware already exists");
+		/* Patch alread exists, just return */
+		if (gEVersion == 0xff) {
+			RTKBT_DBG("global_version is not set, get it!");
+			gEVersion = rtk_get_eversion(dev_entry);
+		}
+		goto patch_end;
+	}
+
+	origin_name1 = dev_entry->patch_entry->patch_name;
+	origin_name2 = dev_entry->patch_entry->config_name;
+	snprintf(name1, sizeof(name1), "pkw_%s", origin_name1);
+	snprintf(name2, sizeof(name2), "pkw_%s", origin_name2);
+	dev_entry->patch_entry->patch_name = name1;
+	dev_entry->patch_entry->config_name = name2;
+	RTKBT_INFO("Loading %s and %s", name1, name2);
+	xdata->fw_len = load_firmware(dev_entry, &xdata->fw_data);
+	dev_entry->patch_entry->patch_name = origin_name1;
+	dev_entry->patch_entry->config_name = origin_name2;
+	if (xdata->fw_len <= 0) {
+		result = -1;
+		RTKBT_ERR("load firmware failed!");
+		goto patch_end;
+	}
+
+	fw_buf = xdata->fw_data;
+
+	pinfo = dev_entry->patch_entry;
+	if (!pinfo) {
+		RTKBT_ERR("%s: No patch entry", __func__);
+		result = -1;
+		goto patch_fail;
+	}
+	max_patch_size = get_max_patch_size(pinfo->chip_type);
+	if (xdata->fw_len > max_patch_size) {
+		result = -1;
+		RTKBT_ERR("FW/CONFIG total length larger than allowed %d",
+			  max_patch_size);
+		goto patch_fail;
+	}
+
+	result = download_data(xdata);
+	if (result < 0) {
+		RTKBT_ERR("download_data failed, err %d", result);
+		goto patch_fail;
+	}
+
+	result = check_fw_version(xdata);
+	if (result <= 0) {
+		RTKBT_ERR("%s: Read Local Version Info failure after download",
+			  __func__);
+		result = -1;
+		goto patch_fail;
+	}
+
+	result = 0;
+
+patch_fail:
+	kfree(fw_buf);
+patch_end:
+	if (xdata->send_pkt)
+		kfree(xdata->send_pkt);
+	if (xdata->rcv_pkt)
+		kfree(xdata->rcv_pkt);
+	kfree(xdata);
+	RTKBT_DBG("Download power key wakeup Patch end %d", result);
+
+	return result;
+}
+#endif
 
 #ifdef RTKBT_SWITCH_PATCH
 /* @return:
@@ -1621,7 +1730,7 @@ fail:
 static u8 *load_config(dev_data *dev_entry, int *length)
 {
 	patch_info *patch_entry;
-	const char *config_name;
+	char config_name[512] = {0};
 	const struct firmware *fw;
 	struct usb_device *udev;
 	int result;
@@ -1637,10 +1746,10 @@ static u8 *load_config(dev_data *dev_entry, int *length)
 
 	config_lists_init();
 	patch_entry = dev_entry->patch_entry;
-	config_name = patch_entry->config_name;
 	udev = dev_entry->udev;
 	chip_type = patch_entry->chip_type;
-
+	
+	sprintf(config_name, "rtlbt/%s", patch_entry->config_name);
 	RTKBT_INFO("config filename %s", config_name);
 	result = request_firmware(&fw, config_name, &udev->dev);
 	if (result < 0)
@@ -1842,7 +1951,7 @@ int load_firmware(dev_data * dev_entry, uint8_t ** buff)
 	const struct firmware *fw;
 	struct usb_device *udev;
 	patch_info *patch_entry;
-	char *fw_name;
+	char fw_name[512] = {0};
 	int fw_len = 0, ret_val = 0, config_len = 0, buf_len = -1;
 	uint8_t *buf = NULL, *config_file_buf = NULL, *epatch_buf = NULL;
 	uint8_t proj_id = 0;
@@ -1862,7 +1971,7 @@ int load_firmware(dev_data * dev_entry, uint8_t ** buff)
 
 	config_file_buf = load_config(dev_entry, &config_len);
 
-	fw_name = patch_entry->patch_name;
+	sprintf(fw_name, "rtlbt/%s", patch_entry->patch_name);
 	RTKBT_DBG("fw name is  %s", fw_name);
 	ret_val = request_firmware(&fw, fw_name, &udev->dev);
 	if (ret_val < 0) {

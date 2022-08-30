@@ -42,7 +42,7 @@
 #include "rtk_coex.h"
 #endif
 
-#ifdef RTKBT_SWITCH_PATCH
+#if defined RTKBT_SWITCH_PATCH || defined RTKBT_SWITCH_WAKEUP
 #include <linux/semaphore.h>
 #include <net/bluetooth/hci_core.h>
 static DEFINE_SEMAPHORE(switch_sem);
@@ -769,7 +769,10 @@ static int btusb_open(struct hci_dev *hdev)
 {
 	struct btusb_data *data = GET_DRV_DATA(hdev);
 	int err;
-
+#ifdef RTKBT_SWITCH_WAKEUP
+	u8 *cmd;
+	int result = 0;
+#endif
 	err = usb_autopm_get_interface(data->intf);
 	if (err < 0)
 		return err;
@@ -783,7 +786,20 @@ static int btusb_open(struct hci_dev *hdev)
 		//err = -1;
 		//goto failed;
 	}
+#ifdef RTKBT_SWITCH_WAKEUP
+	/* Clear patch */
+	cmd = kzalloc(16, GFP_ATOMIC);
+	if (!cmd) {
+		RTKBT_ERR("Can't allocate memory for cmd");
+		return -ENOMEM;
+	}
 
+	cmd[0] = 0x66;
+	cmd[1] = 0xfc;
+	cmd[2] = 0x00;
+	result = __rtk_send_hci_cmd(data->udev, cmd, 3);
+	kfree(cmd);
+#endif
 	err = download_patch(data->intf);
 	if (err < 0)
 		goto failed;
@@ -899,7 +915,7 @@ failed:
 	mdelay(URB_CANCELING_DELAY_MS);	// Added by Realtek
 	usb_scuttle_anchored_urbs(&data->deferred);
 
-#ifdef RTKBT_SWITCH_PATCH
+#if defined RTKBT_SWITCH_PATCH || defined RTKBT_SWITCH_WAKEUP
 	down(&switch_sem);
 	if (data->context) {
 		struct api_context *ctx = data->context;
@@ -1520,8 +1536,13 @@ static int rtkbt_shutdown_notify(struct notifier_block *notifier,
 	struct usb_device *udev;
 	struct usb_interface *intf;
 	struct hci_dev *hdev;
+#ifdef RTKBT_SWITCH_WAKEUP
 	/* int err; */
-
+	int result = 0;
+	u8 *cmd;
+	static u8 hci_state = 0;
+	struct api_context ctx;
+#endif
 	data = container_of(notifier, struct btusb_data, shutdown_notifier);
 	udev = data->udev;
 	intf = data->intf;
@@ -1532,7 +1553,45 @@ static int rtkbt_shutdown_notify(struct notifier_block *notifier,
 	case SYS_POWER_OFF:
 	case SYS_RESTART:
 #ifdef RTKBT_SHUTDOWN_WAKEUP
-		RTKBT_DBG("%s: power off", __func__);
+#ifdef RTKBT_SWITCH_WAKEUP
+		if (test_bit(HCI_UP, &hdev->flags)) {
+			unsigned long expire;
+
+			init_completion(&ctx.done);
+			hci_state = 1;
+
+			down(&switch_sem);
+			data->context = &ctx;
+			ctx.flags = RTLBT_CLOSE;
+			queue_work(hdev->req_workqueue, &hdev->power_off.work);
+			up(&switch_sem);
+
+			expire = msecs_to_jiffies(3000);
+			if (!wait_for_completion_timeout(&ctx.done, expire))
+				RTKBT_ERR("hdev close timeout");
+
+			down(&switch_sem);
+			data->context = NULL;
+			up(&switch_sem);
+		}
+
+		cmd = kzalloc(16, GFP_ATOMIC);
+		if (!cmd) {
+			RTKBT_ERR("Can't allocate memory for cmd");
+			return -ENOMEM;
+		}
+
+		/* Clear patch */
+		cmd[0] = 0x66;
+		cmd[1] = 0xfc;
+		cmd[2] = 0x00;
+
+		result = __rtk_send_hci_cmd(udev, cmd, 3);
+		kfree(cmd);
+		msleep(100); /* From FW colleague's recommendation */
+		result = download_pkw_patch(intf);
+
+#endif
 		set_scan(intf);
 #endif
 		break;

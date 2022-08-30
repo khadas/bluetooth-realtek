@@ -36,7 +36,10 @@
 /* Note that it's necessary to apply TV FW Patch. */
 /* #define RTKBT_SUSPEND_WAKEUP */
 /* #define RTKBT_SHUTDOWN_WAKEUP */
-#define RTKBT_POWERKEY_WAKEUP
+/* #define RTKBT_POWERKEY_WAKEUP */
+#define RTKBT_SUSPEND_WAKEUP
+#define RTKBT_SHUTDOWN_WAKEUP
+#define RTKBT_SWITCH_WAKEUP
 
 /* RTKBT Power-on Whitelist for sideband wake-up by LE Advertising from Remote.
  * Note that it's necessary to apply TV FW Patch. */
@@ -82,21 +85,27 @@ extern void print_event(struct sk_buff *skb);
 extern void print_command(struct sk_buff *skb);
 extern void print_acl(struct sk_buff *skb, int dataOut);
 
-#if defined RTKBT_SWITCH_PATCH || defined RTKBT_TV_POWERON_WHITELIST
+#if defined RTKBT_SWITCH_PATCH || defined RTKBT_TV_POWERON_WHITELIST || defined RTKBT_SWITCH_WAKEUP
 int __rtk_send_hci_cmd(struct usb_device *udev, u8 *buf, u16 size);
 #endif
 
 #ifdef RTKBT_SWITCH_PATCH
+int download_lps_patch(struct usb_interface *intf);
+#endif
+
+#ifdef RTKBT_SWITCH_WAKEUP
+int download_pkw_patch(struct usb_interface *intf);
+#endif
+
+#if defined RTKBT_SWITCH_PATCH  || defined RTKBT_SWITCH_WAKEUP
 #define RTLBT_CLOSE	(1 << 0)
 struct api_context {
 	u32			flags;
 	struct completion	done;
 	int			status;
 };
-
-int download_lps_patch(struct usb_interface *intf);
 #endif
 
-#if defined RTKBT_SUSPEND_WAKEUP || defined RTKBT_SHUTDOWN_WAKEUP || defined RTKBT_SWITCH_PATCH
+#if defined RTKBT_SUSPEND_WAKEUP || defined RTKBT_SHUTDOWN_WAKEUP || defined RTKBT_SWITCH_PATCH || defined RTKBT_SWITCH_WAKEUP
 int set_scan(struct usb_interface *intf);
 #endif
