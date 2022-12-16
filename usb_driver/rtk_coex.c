@@ -57,7 +57,7 @@
 
 #define RTK_VERSION "1.2"
 
-#define RTKBT_DBG(fmt, arg...) printk(KERN_INFO "rtk_btcoex: " fmt "\n" , ## arg)
+#define RTKBT_DBG(fmt, arg...) printk(KERN_DEBUG "rtk_btcoex: " fmt "\n" , ## arg)
 #define RTKBT_INFO(fmt, arg...) printk(KERN_INFO "rtk_btcoex: " fmt "\n" , ## arg)
 #define RTKBT_WARN(fmt, arg...) printk(KERN_WARNING "rtk_btcoex: " fmt "\n", ## arg)
 #define RTKBT_ERR(fmt, arg...) printk(KERN_WARNING "rtk_btcoex: " fmt "\n", ## arg)
@@ -1540,7 +1540,7 @@ void rtk_btcoex_parse_cmd(uint8_t *buffer, int count)
 			rtk_notify_btoperation_to_wifi(BT_OPCODE_INQUIRY_START,
 						       0, NULL);
 #else
-			RTKBT_INFO("hci (periodic)inq start");
+			RTKBT_DBG("hci (periodic)inq start");
 #endif
 		}
 		break;
@@ -1554,7 +1554,7 @@ void rtk_btcoex_parse_cmd(uint8_t *buffer, int count)
 			rtk_notify_btoperation_to_wifi(BT_OPCODE_INQUIRY_END, 0,
 						       NULL);
 #else
-			RTKBT_INFO("hci (periodic)inq cancel/exit");
+			RTKBT_DBG("hci (periodic)inq cancel/exit");
 #endif
 		}
 		break;
