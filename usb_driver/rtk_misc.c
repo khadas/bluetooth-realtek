@@ -623,6 +623,7 @@ static void config_process(u8 *buff, int len)
 	}
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 15, 0)
 static void config_file_proc(const char *path)
 {
 	int size;
@@ -660,6 +661,7 @@ static void config_file_proc(const char *path)
 	tbuf[rc++] = '\0';
 	config_process(tbuf, rc);
 }
+#endif
 
 int patch_add(struct usb_interface *intf)
 {
@@ -1671,6 +1673,9 @@ static int bachk(const char *str)
 
 static int request_bdaddr(u8 *buf)
 {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
+	return -1;
+#else
 	int size;
 	int rc;
 	struct file *file;
@@ -1725,6 +1730,7 @@ static int request_bdaddr(u8 *buf)
 	return size;
 fail:
 	return rc;
+#endif
 }
 
 static u8 *load_config(dev_data *dev_entry, int *length)
@@ -1758,8 +1764,10 @@ static u8 *load_config(dev_data *dev_entry, int *length)
 	file_sz = fw->size;
 	buf = (u8 *)fw->data;
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 15, 0)
 	/* Load extra configs */
 	config_file_proc(EXTRA_CONFIG_FILE);
+#endif
 	list_for_each_safe(pos, next, &list_extracfgs) {
 		n = list_entry(pos, struct cfg_list_item, list);
 		RTKBT_INFO("extra cfg: ofs %04x, len %u", n->offset, n->len);
