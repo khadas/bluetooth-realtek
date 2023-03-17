@@ -14,6 +14,8 @@ ifeq ($(CONFIG_BTCOEX), y)
 	EXTRA_CFLAGS += -DCONFIG_BTCOEX
 endif
 
+EXTRA_CFLAGS += -Wno-unused-function
+
 ifneq ($(KERNELRELEASE),)
 	obj-m := rtk_btusb.o
 	rtk_btusb-y = rtk_coex.o rtk_misc.o rtk_bt.o
