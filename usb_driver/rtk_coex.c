@@ -471,7 +471,7 @@ static void flush_profile_hash(struct rtl_coex_struct * coex)
 	struct list_head *iter = NULL, *temp = NULL;
 	rtk_prof_info *desc = NULL;
 
-	spin_lock(&btrtl_coex.spin_lock_profile);
+	mutex_lock(&btrtl_coex.mutex_profile);
 	list_for_each_safe(iter, temp, head) {
 		desc = list_entry(iter, rtk_prof_info, list);
 		if (desc) {
@@ -485,7 +485,7 @@ static void flush_profile_hash(struct rtl_coex_struct * coex)
 		}
 	}
 	//INIT_LIST_HEAD(head);
-	spin_unlock(&btrtl_coex.spin_lock_profile);
+	mutex_unlock(&btrtl_coex.mutex_profile);
 }
 
 static rtk_prof_info *find_profile_by_handle_scid(struct rtl_coex_struct *
@@ -857,7 +857,7 @@ static uint8_t handle_l2cap_con_req(uint16_t handle, uint16_t psm,
 		return status;
 	}
 
-	spin_lock(&btrtl_coex.spin_lock_profile);
+	mutex_lock(&btrtl_coex.mutex_profile);
 	if (direction)		//1: out
 		prof_info =
 		    find_profile_by_handle_scid(&btrtl_coex, handle, scid);
@@ -867,7 +867,7 @@ static uint8_t handle_l2cap_con_req(uint16_t handle, uint16_t psm,
 
 	if (prof_info) {
 		RTKBT_DBG("%s: this profile is already exist!", __func__);
-		spin_unlock(&btrtl_coex.spin_lock_profile);
+		mutex_unlock(&btrtl_coex.mutex_profile);
 		return status;
 	}
 
@@ -876,7 +876,7 @@ static uint8_t handle_l2cap_con_req(uint16_t handle, uint16_t psm,
 	else			// 0:in
 		status = list_allocate_add(handle, psm, profile_index, scid, 0);
 
-	spin_unlock(&btrtl_coex.spin_lock_profile);
+	mutex_unlock(&btrtl_coex.mutex_profile);
 
 	if (!status)
 		RTKBT_ERR("%s: list_allocate_add failed!", __func__);
@@ -891,7 +891,7 @@ static uint8_t handle_l2cap_con_rsp(uint16_t handle, uint16_t dcid,
 	rtk_prof_info *prof_info = NULL;
 	rtk_conn_prof *phci_conn = NULL;
 
-	spin_lock(&btrtl_coex.spin_lock_profile);
+	mutex_lock(&btrtl_coex.mutex_profile);
 	if (!direction)		//0, in
 		prof_info =
 		    find_profile_by_handle_scid(&btrtl_coex, handle, scid);
@@ -901,7 +901,7 @@ static uint8_t handle_l2cap_con_rsp(uint16_t handle, uint16_t dcid,
 
 	if (!prof_info) {
 		//RTKBT_DBG("handle_l2cap_con_rsp: prof_info Not Find!!");
-		spin_unlock(&btrtl_coex.spin_lock_profile);
+		mutex_unlock(&btrtl_coex.mutex_profile);
 		return FALSE;
 	}
 
@@ -919,7 +919,7 @@ static uint8_t handle_l2cap_con_rsp(uint16_t handle, uint16_t dcid,
 						  TRUE);
 	}
 
-	spin_unlock(&btrtl_coex.spin_lock_profile);
+	mutex_unlock(&btrtl_coex.mutex_profile);
 	return TRUE;
 }
 
@@ -931,7 +931,7 @@ static uint8_t handle_l2cap_discon_req(uint16_t handle, uint16_t dcid,
 	RTKBT_DBG("%s: handle 0x%04x, dcid 0x%04x, scid 0x%04x, dir %u",
 			__func__, handle, dcid, scid, direction);
 
-	spin_lock(&btrtl_coex.spin_lock_profile);
+	mutex_lock(&btrtl_coex.mutex_profile);
 	if (!direction)		//0: in
 		prof_info =
 		    find_profile_by_handle_dcid_scid(&btrtl_coex, handle,
@@ -943,13 +943,13 @@ static uint8_t handle_l2cap_discon_req(uint16_t handle, uint16_t dcid,
 
 	if (!prof_info) {
 		//LogMsg("handle_l2cap_discon_req: prof_info Not Find!");
-		spin_unlock(&btrtl_coex.spin_lock_profile);
+		mutex_unlock(&btrtl_coex.mutex_profile);
 		return 0;
 	}
 
 	phci_conn = find_connection_by_handle(&btrtl_coex, handle);
 	if (!phci_conn) {
-		spin_unlock(&btrtl_coex.spin_lock_profile);
+		mutex_unlock(&btrtl_coex.mutex_profile);
 		return 0;
 	}
 
@@ -959,7 +959,7 @@ static uint8_t handle_l2cap_discon_req(uint16_t handle, uint16_t dcid,
 		update_profile_connection(phci_conn, profile_sink, FALSE);
 
 	delete_profile_from_hash(prof_info);
-	spin_unlock(&btrtl_coex.spin_lock_profile);
+	mutex_unlock(&btrtl_coex.mutex_profile);
 
 	return 1;
 }
@@ -2061,7 +2061,7 @@ static void disconn_acl(u16 handle, struct rtl_hci_conn *conn)
 	struct list_head *iter = NULL, *temp = NULL;
 	u8 need_update = 0;
 
-	spin_lock(&coex->spin_lock_profile);
+	mutex_lock(&coex->mutex_profile);
 
 	list_for_each_safe(iter, temp, &coex->profile_list) {
 		prof_info = list_entry(iter, rtk_prof_info, list);
@@ -2082,7 +2082,7 @@ static void disconn_acl(u16 handle, struct rtl_hci_conn *conn)
 	}
 	if (need_update)
 		rtk_notify_profileinfo_to_fw();
-	spin_unlock(&coex->spin_lock_profile);
+	mutex_unlock(&coex->mutex_profile);
 }
 
 static void rtk_handle_disconnect_complete_evt(u8 * p)
@@ -3048,7 +3048,7 @@ void rtk_btcoex_probe(struct hci_dev *hdev)
 {
 	btrtl_coex.hdev = hdev;
 	spin_lock_init(&btrtl_coex.spin_lock_sock);
-	spin_lock_init(&btrtl_coex.spin_lock_profile);
+	mutex_init(&btrtl_coex.mutex_profile);
 }
 
 void rtk_btcoex_init(void)
@@ -3089,3 +3089,4 @@ void rtk_btcoex_exit(void)
 	destroy_workqueue(btrtl_coex.timer_wq);
 	rtl_free_buff(&btrtl_coex);
 }
+

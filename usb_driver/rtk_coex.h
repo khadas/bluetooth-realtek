@@ -255,7 +255,7 @@ struct rtl_coex_struct {
 #endif
 	struct urb *urb;
 	spinlock_t spin_lock_sock;
-	spinlock_t spin_lock_profile;
+	struct mutex mutex_profile;
 	uint16_t profile_bitmap;
 	uint16_t profile_status;
 	int8_t profile_refcount[8];
