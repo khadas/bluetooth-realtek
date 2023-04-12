@@ -95,6 +95,7 @@ int btusb_send_frame(struct sk_buff *skb);
 #define BTUSB_ISOC_RUNNING		2
 #define BTUSB_SUSPENDING		3
 #define BTUSB_DID_ISO_RESUME	4
+#define BTUSB_USE_ALT3_FOR_WBS	15
 
 struct btusb_data {
 	struct hci_dev *hdev;
@@ -136,6 +137,7 @@ struct btusb_data {
 
 #if HCI_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
 	unsigned int air_mode;
+	bool usb_alt6_packet_flow;
 #endif
 	int isoc_altsetting;
 	int suspend_count;

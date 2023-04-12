@@ -150,6 +150,8 @@ typedef struct rtb_struct {
 	uint8_t hci_ver;
 	uint8_t eversion;
 	uint8_t chip_type;
+	uint8_t chip_ver;
+	uint8_t key_id;
 
 	uint32_t vendor_baud;
 	uint8_t dl_fw_flag;
@@ -171,6 +173,7 @@ typedef struct rtb_struct {
 #define CMD_STATE_SUCCESS	0x01
 	struct __cmd_state {
 		uint16_t opcode;
+		uint16_t subopcode;
 		uint16_t state;
 	} cmd_state;
 

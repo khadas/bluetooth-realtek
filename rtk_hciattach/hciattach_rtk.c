@@ -44,7 +44,7 @@
 #include "hciattach.h"
 #include "hciattach_h4.h"
 
-#define RTK_VERSION "3.1.dced3af.20210628-175240"
+#define RTK_VERSION "3.1.9495cb2.20230110-195934"
 
 #define TIMESTAMP_PR
 
@@ -69,8 +69,16 @@ uint8_t DBG_ON = 1;
 #define HCI_VENDOR_CHANGE_BAUD		0xfc17
 #define HCI_VENDOR_READ_ROM_VER		0xfc6d
 #define HCI_CMD_READ_LOCAL_VER		0x1001
-#define HCI_VENDOR_READ_CHIP_TYPE	0xfc61
+#define HCI_VENDOR_READ_CMD		0xfc61
 #define HCI_CMD_RESET			0x0c03
+
+enum rtk_read_class {
+	READ_NONE = 0,
+	READ_CHIP_TYPE = 1,
+	READ_LMP_SUB_VERSION = 2,
+	READ_CHIP_VER = 3,
+	READ_SEC_PROJ = 4
+};
 
 /* HCI data types */
 #define H5_ACK_PKT              0x00
@@ -104,7 +112,7 @@ struct hci_ev_cmd_complete {
 #define OP_H5_CONFIG		0x02
 #define OP_ROM_VER		((1 << 24) | HCI_VENDOR_READ_ROM_VER)
 #define OP_LMP_VER		((1 << 24) | HCI_CMD_READ_LOCAL_VER)
-#define OP_CHIP_TYPE		((1 << 24) | HCI_VENDOR_READ_CHIP_TYPE)
+#define OP_VENDOR_READ		((1 << 24) | HCI_VENDOR_READ_CMD)
 #define OP_SET_BAUD		((1 << 24) | HCI_VENDOR_CHANGE_BAUD)
 #define OP_HCI_RESET		((1 << 24) | HCI_CMD_RESET)
 
@@ -505,18 +513,18 @@ static struct sk_buff *h5_prepare_pkt(struct rtb_struct * h5, uint8_t *data,
  * 	int pkts_to_be_removed = 0;
  * 	int seqno = 0;
  * 	int i = 0;
- * 
+ *
  * 	seqno = h5->msgq_txseq;
  * 	// pkts_to_be_removed = GetListLength(h5->unacked);
- * 
+ *
  * 	while (pkts_to_be_removed) {
  * 		if (h5->rxack == seqno)
  * 			break;
- * 
+ *
  * 		pkts_to_be_removed--;
  * 		seqno = (seqno - 1) & 0x07;
  * 	}
- * 
+ *
  * 	if (h5->rxack != seqno) {
  * 		RS_DBG("Peer acked invalid packet");
  * 	}
@@ -529,11 +537,11 @@ static struct sk_buff *h5_prepare_pkt(struct rtb_struct * h5, uint8_t *data,
  * 		//__skb_unlink(skb, &h5->unack);
  * 		//skb_free(skb);
  * 	}
- * 
+ *
  * 	//  if (skb_queue_empty(&h5->unack))
  * 	//          del_timer(&h5->th5);
  * 	//  spin_unlock_irqrestore(&h5->unack.lock, flags);
- * 
+ *
  * 	if (i != pkts_to_be_removed)
  * 		RS_DBG("Removed only (%u) out of (%u) pkts", i,
  * 		       pkts_to_be_removed);
@@ -611,10 +619,24 @@ static void h5_init_hci_cc(struct sk_buff *skb)
 		RS_INFO("Read ROM version %02x", rtb_cfg.eversion);
 		break;
 
-	case HCI_VENDOR_READ_CHIP_TYPE:
-		rtb_cfg.chip_type = (skb->data[1] & 0x0f);
-		RS_INFO("Read chip type %02x", rtb_cfg.chip_type);
+	case HCI_VENDOR_READ_CMD:
+		if (rtb_cfg.cmd_state.subopcode == READ_CHIP_TYPE) {
+			rtb_cfg.chip_type = (skb->data[1] & 0x0f);
+			rtb_cfg.chip_ver = (skb->data[2] & 0x0f);
+			RS_INFO("Read chip type %02x", rtb_cfg.chip_type);
+			RS_INFO("Read chip ver %02x", rtb_cfg.chip_ver);
+		} else if (rtb_cfg.cmd_state.subopcode == READ_LMP_SUB_VERSION) {
+			rtb_cfg.lmp_subver = (skb->data[1] | (skb->data[2] << 8));
+			RS_INFO("LMP Subversion 0x%04x", rtb_cfg.lmp_subver);
+		} else if (rtb_cfg.cmd_state.subopcode == READ_CHIP_VER) {
+			rtb_cfg.hci_rev = (skb->data[1] | (skb->data[2] << 8));
+			RS_INFO("HCI Revision 0x%04x", rtb_cfg.hci_rev);
+		} else if (rtb_cfg.cmd_state.subopcode == READ_SEC_PROJ) {
+			rtb_cfg.key_id = skb->data[1];
+		}
+
 		break;
+
 	default:
 		return;
 	}
@@ -959,8 +981,8 @@ static const char *op_string(uint32_t op)
 		return "OP_H5_CONFIG";
 	case OP_HCI_RESET:
 		return "OP_HCI_RESET";
-	case OP_CHIP_TYPE:
-		return "OP_CHIP_TYPE";
+	case OP_VENDOR_READ:
+		return "OP_VENDOR_READ";
 	case OP_ROM_VER:
 		return "OP_ROM_VER";
 	case OP_LMP_VER:
@@ -1312,7 +1334,7 @@ int h5_vendor_change_speed(int fd, uint32_t baudrate)
 		return -1;
 	}
 
-	rtb_cfg.cmd_state.opcode = HCI_VENDOR_CHANGE_BAUD;;
+	rtb_cfg.cmd_state.opcode = HCI_VENDOR_CHANGE_BAUD;
 	rtb_cfg.cmd_state.state = CMD_STATE_UNKNOWN;
 	result = start_transmit_wait(fd, nskb, OP_SET_BAUD, 1000, 0);
 	skb_free(nskb);
@@ -1457,6 +1479,7 @@ static int rtb_download_fwc(int fd, uint8_t *buf, int size, int proto,
 	uint16_t num;
 	unsigned char *pkt_buf;
 	uint16_t i, j;
+	uint16_t idx = 0;
 	int result;
 #ifdef SERIAL_NONBLOCK_READ
 	int old_fl;
@@ -1502,14 +1525,30 @@ static int rtb_download_fwc(int fd, uint8_t *buf, int size, int proto,
 
 	pkt_buf = buf;
 
+	if (proto == HCI_UART_H4) {
+		tcdrain(fd);
+
+		if (rtb_cfg.uart_flow_ctrl) {
+			RS_INFO("Enable host hw flow control");
+			ti->c_cflag |= CRTSCTS;
+		} else {
+			RS_INFO("Disable host hw flow control");
+			ti->c_cflag &= ~CRTSCTS;
+		}
+
+		if (tcsetattr(fd, TCSANOW, ti) < 0) {
+			RS_ERR("Can't set port settings");
+			return -1;
+		}
+	}
+
 	for (i = 0; i <= total_idx; i++) {
 		/* Index will roll over when it reaches 0x80
 		 * 0, 1, 2, 3, ..., 126, 127(7f), 1, 2, 3, ...
 		 */
-		if (i > 0x7f)
-			j = (i & 0x7f) + 1;
-		else
-			j = i;
+		j = idx++;
+		if (j == 0x7f)
+			idx = 1;
 
 		if (i < end_idx) {
 			curr_idx = j;
@@ -1645,14 +1684,44 @@ static inline void std_speed_to_vendor(int uart_speed, uint32_t *rtb_speed)
 	return;
 }
 
-void rtb_read_chip_type(int dd)
+int rtb_vendor_read(int dd, uint16_t subopcode)
 {
-	/* 0xB000A094 */
+
+	/* 0x10A6AD00B0 */
 	unsigned char cmd_buff[] = {
-		0x61, 0xfc, 0x05, 0x10, 0xa6, 0xa0, 0x00, 0xb0
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xB0
 	};
+	unsigned char cmd_chip_type_buff[] = {
+		0x61, 0xfc, 0x05, 0x10, 0xA6, 0xAD, 0x00, 0xB0
+	};
+	unsigned char cmd_lmp_sub_version_buf[] = {
+		0x61, 0xfc, 0x05, 0x10, 0x38, 0x04, 0x28, 0x80
+	};
+	unsigned char cmd_chip_version_buf[] =  {
+		0x61, 0xfc, 0x05, 0x10, 0x3A, 0x04, 0x28, 0x80
+	};
+	unsigned char cmd_sec_buf[] = {
+		0x61, 0xfc, 0x05, 0x10, 0xA4, 0x0D, 0x00, 0xb0
+	};
+
 	struct sk_buff *nskb;
 	int result;
+	switch (subopcode) {
+	case READ_CHIP_TYPE:
+		memcpy(cmd_buff, cmd_chip_type_buff, sizeof(cmd_buff));
+		break;
+	case READ_LMP_SUB_VERSION:
+		memcpy(cmd_buff, cmd_lmp_sub_version_buf, sizeof(cmd_buff));
+		break;
+	case READ_CHIP_VER:
+		memcpy(cmd_buff, cmd_chip_version_buf, sizeof(cmd_buff));
+		break;
+	case READ_SEC_PROJ:
+		memcpy(cmd_buff, cmd_sec_buf, sizeof(cmd_buff));
+		break;
+	default:
+		break;
+	}
 
 	nskb = h5_prepare_pkt(&rtb_cfg, cmd_buff, sizeof(cmd_buff),
 			      HCI_COMMAND_PKT);
@@ -1661,14 +1730,16 @@ void rtb_read_chip_type(int dd)
 		exit(EXIT_FAILURE);
 	}
 
-	rtb_cfg.cmd_state.opcode = HCI_VENDOR_READ_CHIP_TYPE;
+	rtb_cfg.cmd_state.opcode = HCI_VENDOR_READ_CMD;
+	rtb_cfg.cmd_state.subopcode = subopcode;
 	rtb_cfg.cmd_state.state = CMD_STATE_UNKNOWN;
-	result = start_transmit_wait(dd, nskb, OP_CHIP_TYPE, 250, 3);
+
+	result = start_transmit_wait(dd, nskb, OP_VENDOR_READ, 250, 3);
 	skb_free(nskb);
 	if (result < 0)
-		RS_ERR("OP_CHIP_TYPE Transmission error");
+		RS_ERR("OP_VENDOR_READ Transmission error");
 
-	return;
+	return 0;
 }
 
 /*
@@ -1720,6 +1791,20 @@ void rtb_read_local_version(int dd)
 	return;
 }
 
+static int check_fw_chip_ver(int fd)
+{
+	rtb_vendor_read(fd, READ_LMP_SUB_VERSION);
+	if (rtb_cfg.lmp_subver == 0x8822) {
+		rtb_vendor_read(fd, READ_CHIP_VER);
+		if (rtb_cfg.hci_rev == 0x000e) {
+			return 0;
+		}
+	}
+
+	rtb_read_local_version(fd);
+	return 0;
+}
+
 /*
  * Config Realtek Bluetooth.
  * Config parameters are got from Realtek Config file and FW.
@@ -1738,7 +1823,7 @@ static int rtb_config(int fd, int proto, int speed, struct termios *ti)
 	/* Read Local Version Information and RTK ROM version */
 	if (proto == HCI_UART_3WIRE) {
 		RS_INFO("Realtek H5 IC");
-		rtb_read_local_version(fd);
+		check_fw_chip_ver(fd);
 		rtb_read_eversion(fd);
 	} else {
 		RS_INFO("Realtek H4 IC");
@@ -1810,11 +1895,25 @@ static int rtb_config(int fd, int proto, int speed, struct termios *ti)
 	case ROM_LMP_8821a:
 		break;
 	case ROM_LMP_8761a:
-		rtb_read_chip_type(fd);
+		if (proto == HCI_UART_3WIRE)
+			rtb_vendor_read(fd, READ_CHIP_TYPE);
 		break;
 	case ROM_LMP_8703b:
-		rtb_read_chip_type(fd);
+		rtb_vendor_read(fd, READ_CHIP_TYPE);
 		break;
+	case ROM_LMP_8852a:
+		rtb_vendor_read(fd, READ_CHIP_TYPE);
+		break;
+	}
+
+	if ((rtb_cfg.chip_type == CHIP_8852BPE_VR) || (rtb_cfg.chip_type == CHIP_8852BPS)) {
+		rtb_cfg.chip_type = CHIP_8852BP;
+		RS_INFO("chip_type: %d", rtb_cfg.chip_type);
+	}
+
+	if (rtb_cfg.chip_type == CHIP_8852BP) {
+		rtb_cfg.eversion = rtb_cfg.chip_ver;
+		RS_INFO("eversion: %d", rtb_cfg.eversion);
 	}
 
 	rtb_cfg.patch_ent = get_patch_entry(&rtb_cfg);
@@ -1881,9 +1980,20 @@ static int rtb_config(int fd, int proto, int speed, struct termios *ti)
 		max_patch_size = 40 * 1024;
 		break;
 	case CHIP_8852AS:
+		max_patch_size = 0x114D0 + 529; /* 69.2KB */
+		break;
 	case CHIP_8723FS:
+		max_patch_size = 0xC4Cf + 529; /* 49.2KB */
+		break;
 	case CHIP_8852BS:
-		max_patch_size = 40 * 1024 + 529;
+	case CHIP_8852BP:
+		max_patch_size = 0x104D0 + 529;  /* 65KB */
+		break;
+	case CHIP_8852CS:
+		max_patch_size = 0x130D0 + 529; /* 76.2KB */
+		break;
+	case CHIP_8822ES:
+		max_patch_size = 0x24620 + 529; /* 76.2KB */
 		break;
 	default:
 		max_patch_size = 24 * 1024;

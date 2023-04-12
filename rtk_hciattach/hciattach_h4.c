@@ -25,6 +25,7 @@
 #include <sys/epoll.h>
 #include "hciattach.h"
 #include "hciattach_h4.h"
+#include "rtb_fwc.h"
 
 extern struct rtb_struct rtb_cfg;
 

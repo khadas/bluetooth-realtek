@@ -55,9 +55,8 @@
 #include "rtk_coex.h"
 #endif
 
-#define VERSION "2.2"
+#define VERSION "2.2.35633de.20230110-195930"
 
-#define ANYKEY_WAKEUP
 
 #if HCI_VERSION_CODE > KERNEL_VERSION(3, 4, 0)
 #define GET_DRV_DATA(x)		hci_get_drvdata(x)
@@ -81,8 +80,6 @@ struct hci_rsp_read_local {
 #if HCI_VERSION_CODE < KERNEL_VERSION(3, 4, 0)
 static int reset = 0;
 #endif
-#define RTKBT_DBG(fmt, arg...) printk(KERN_INFO "rtk_ldisc: " fmt "\n" , ## arg)
-#define RTKBT_ERR(fmt, arg...) printk(KERN_ERR "rtk_ldisc: " fmt "\n" , ## arg)
 
 static struct hci_uart_proto *hup[HCI_UART_MAX_PROTO];
 static int hci_uart_flush(struct hci_dev *hdev);
@@ -338,6 +335,7 @@ static int hci_uart_open(struct hci_dev *hdev)
 	/* Undo clearing this from hci_uart_close() */
 	hdev->flush = hci_uart_flush;
 
+	set_bit(HCI_UP, &hdev->flags);
 #if HCI_VERSION_CODE < KERNEL_VERSION(4, 4, 0)
 	set_bit(HCI_RUNNING, &hdev->flags);
 #endif
@@ -791,6 +789,7 @@ static bool le_aoto_conn_always_exist(struct hci_uart *hu)
 {
 	struct hci_conn_params *p;
 	bool ret = false;
+
 	hci_dev_lock(hu->hdev);
 	list_for_each_entry(p, &hu->hdev->le_conn_params, list) {
 		if ( p->auto_connect == HCI_AUTO_CONN_ALWAYS &&
@@ -845,7 +844,7 @@ static int hci_uart_pm_notifier(struct notifier_block *b, unsigned long v, void 
 		}
 #endif
 
-#ifdef ANYKEY_WAKEUP
+#ifndef RTKBT_POWERKEY_WAKEUP
 		/*for any key wakeup, don't need to send 0xfc28 */
 		break;
 #endif
@@ -862,13 +861,14 @@ static int hci_uart_pm_notifier(struct notifier_block *b, unsigned long v, void 
 			break;
 		BT_INFO("rtl resume: hci ver %u, hci rev %04x, lmp subver %04x",
 			hci_ver, hci_rev, lmp_subver);
-#ifdef ANYKEY_WAKEUP
+#ifndef RTKBT_POWERKEY_WAKEUP
 		/*for any key wakeup, keep connections for key event report */
 		break;
 #endif
 		result = rtkbt_simulate_disconnect_event(hu);
 		if (result < 0)
 			BT_ERR("rtkbt_simulate_disconnect_event error: %d", result);
+
 		if (le_aoto_conn_always_exist(hu))
 			le_scan_restart(hu);
 
@@ -887,11 +887,10 @@ int rtkbt_shutdown_notify(struct notifier_block *notifier,
 	int result;
 	struct hci_uart *hu = container_of(notifier, struct hci_uart, shutdown_notifier);
 
-	RTKBT_ERR("%s: pm_event %ld", __func__, pm_event);
+	BT_INFO("%s: pm_event %ld", __func__, pm_event);
 	switch (pm_event) {
 	case SYS_POWER_OFF:
 	case SYS_RESTART:
-		RTKBT_DBG("%s: power off", __func__);
 		result = rtkbt_notify_suspend(hu);
 		if (result < 0) {
 			BT_ERR("rtkbt_notify_suspend error: %d", result);
@@ -904,8 +903,6 @@ int rtkbt_shutdown_notify(struct notifier_block *notifier,
 	return NOTIFY_DONE;
 }
 #endif
-
-
 
 /* ------ LDISC part ------ */
 /* hci_uart_tty_open
@@ -921,7 +918,7 @@ static int hci_uart_tty_open(struct tty_struct *tty)
 {
 	struct hci_uart *hu = (void *)tty->disc_data;
 
-	BT_INFO("%s, tty %p", __func__, tty);
+	BT_DBG("tty %p", tty);
 
 	/* But nothing ensures disc_data to be NULL. And since ld->ops->open
 	 * shall be called only once, we do not need the check at all.
@@ -977,6 +974,7 @@ static int hci_uart_tty_open(struct tty_struct *tty)
 	hu->shutdown_notifier.notifier_call = rtkbt_shutdown_notify;
 	register_reboot_notifier(&hu->shutdown_notifier);
 #endif
+
 	return 0;
 }
 
@@ -1023,6 +1021,7 @@ static void hci_uart_tty_close(struct tty_struct *tty)
 	unregister_pm_notifier(&hu->pm_notify_block);
 	unregister_reboot_notifier(&hu->shutdown_notifier);
 #endif
+
 	kfree(hu);
 }
 
@@ -1348,8 +1347,13 @@ static ssize_t hci_uart_tty_write(struct tty_struct *tty, struct file *file,
 	return 0;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 16, 0)
+static __poll_t hci_uart_tty_poll(struct tty_struct *tty,
+				      struct file *filp, poll_table * wait)
+#else
 static unsigned int hci_uart_tty_poll(struct tty_struct *tty,
 				      struct file *filp, poll_table * wait)
+#endif
 {
 	return 0;
 }
