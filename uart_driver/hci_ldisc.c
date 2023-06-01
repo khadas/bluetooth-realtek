@@ -55,7 +55,7 @@
 #include "rtk_coex.h"
 #endif
 
-#define VERSION "2.2.35633de.20230110-195930"
+#define VERSION "2.2.813d11a.20230413-173903"
 
 
 #if HCI_VERSION_CODE > KERNEL_VERSION(3, 4, 0)
@@ -1263,8 +1263,13 @@ static int hci_uart_set_flags(struct hci_uart *hu, unsigned long flags)
  *
  * Return Value:    Command dependent
  */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 17, 0)
+static int hci_uart_tty_ioctl(struct tty_struct *tty, unsigned int cmd,
+			      unsigned long arg)
+#else
 static int hci_uart_tty_ioctl(struct tty_struct *tty, struct file *file,
 			      unsigned int cmd, unsigned long arg)
+#endif
 {
 	struct hci_uart *hu = (void *)tty->disc_data;
 	int err = 0;
@@ -1279,38 +1284,40 @@ static int hci_uart_tty_ioctl(struct tty_struct *tty, struct file *file,
 	case HCIUARTSETPROTO:
 		if (!test_and_set_bit(HCI_UART_PROTO_SET, &hu->flags)) {
 			err = hci_uart_set_proto(hu, arg);
-			if (err) {
+			if (err)
 				clear_bit(HCI_UART_PROTO_SET, &hu->flags);
-				return err;
-			}
 		} else
-			return -EBUSY;
+			err = -EBUSY;
 		break;
 
 	case HCIUARTGETPROTO:
 		if (test_bit(HCI_UART_PROTO_SET, &hu->flags))
-			return hu->proto->id;
-		return -EUNATCH;
+			err = hu->proto->id;
+		else
+			err = -EUNATCH;
+		break;
 
 	case HCIUARTGETDEVICE:
 		if (test_bit(HCI_UART_REGISTERED, &hu->flags))
-			return hu->hdev->id;
-		return -EUNATCH;
+			err = hu->hdev->id;
+		else
+			err = -EUNATCH;
+		break;
 
 	case HCIUARTSETFLAGS:
 		if (test_bit(HCI_UART_PROTO_SET, &hu->flags))
-			return -EBUSY;
+			err = -EBUSY;
+		else
 #if HCI_VERSION_CODE >= KERNEL_VERSION(3, 17, 0)
-		err = hci_uart_set_flags(hu, arg);
-		if (err)
-			return err;
+			err = hci_uart_set_flags(hu, arg);
 #else
-		hu->hdev_flags = arg;
+			hu->hdev_flags = arg;
 #endif
 		break;
 
 	case HCIUARTGETFLAGS:
-		return hu->hdev_flags;
+		err = hu->hdev_flags;
+		break;
 
 	default:
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 16, 0)

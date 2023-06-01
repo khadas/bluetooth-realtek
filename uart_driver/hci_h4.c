@@ -185,12 +185,12 @@ static int h4_recv(struct hci_uart *hu, void *data, int count)
 			case H4_W4_DATA:
 				BT_DBG("Complete data");
 #ifdef BTCOEX
-				if (bt_cb(h4->rx_skb)->pkt_type == HCI_EVENT_PKT)
+				if(bt_cb(h4->rx_skb)->pkt_type == HCI_EVENT_PKT)
 					rtk_btcoex_parse_event(
 							h4->rx_skb->data,
 							h4->rx_skb->len);
 
-				if (bt_cb(h4->rx_skb)->pkt_type == HCI_ACLDATA_PKT)
+				if(bt_cb(h4->rx_skb)->pkt_type == HCI_ACLDATA_PKT)
 					rtk_btcoex_parse_l2cap_data_rx(
 							h4->rx_skb->data,
 							h4->rx_skb->len);

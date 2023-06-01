@@ -40,7 +40,7 @@
 #define BTCOEX
 
 /* Send host sleep notification to Controller */
-#define WOBT_NOTIFY		1	/* 1  enable; 0  disable */
+#define WOBT_NOTIFY		0	/* 1  enable; 0  disable */
 
 /* Send LE whitelist only for Background scan parameters */
 #define WOBT_NOTIFY_BG_SCAN_LE_WHITELIST_ONLY	(0 * WOBT_NOTIFY)	/* 1  enable; 0  disable */

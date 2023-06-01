@@ -221,7 +221,7 @@ static struct rtl_l2_buff *rtl_l2_node_get(struct rtl_coex_struct *coex)
 
 	spin_lock_irqsave(&coex->buff_lock, flags);
 
-	if (!list_empty(&coex->l2_free_list)) {
+	if(!list_empty(&coex->l2_free_list)) {
 		l2 = list_entry(coex->l2_free_list.next, struct rtl_l2_buff,
 				list);
 		list_del(&l2->list);
@@ -280,7 +280,7 @@ static rtk_prof_info *find_by_psm(u16 handle, u16 psm)
 	list_for_each_safe(iter, temp, head) {
 		desc = list_entry(iter, rtk_prof_info, list);
 		if ((handle & 0xfff) == (desc->handle & 0xfff) &&
-			desc->psm == psm)
+                    desc->psm == psm)
 			return desc;
 	}
 
@@ -636,7 +636,7 @@ static void rtk_notify_profileinfo_to_fw(void)
 			handle_number++;
 	}
 
-	if (!profileinfo_cmd) {
+	if(!profileinfo_cmd) {
 		buffer_size = 1 + handle_number * 3 + 1;
 	} else {
 		buffer_size = 1 + handle_number * 6;
@@ -657,7 +657,7 @@ static void rtk_notify_profileinfo_to_fw(void)
 	list_for_each(iter, head) {
 		hci_conn = list_entry(iter, rtk_conn_prof, list);
 		if (hci_conn && hci_conn->profile_bitmap) {
-			if (!profileinfo_cmd) {
+			if(!profileinfo_cmd) {
 				UINT16_TO_STREAM(p, hci_conn->handle);
 				RTKBT_DBG("%s: handle 0x%04x", __func__,
 						hci_conn->handle);
@@ -678,7 +678,7 @@ static void rtk_notify_profileinfo_to_fw(void)
 			break;
 	}
 
-	if (!profileinfo_cmd) {
+	if(!profileinfo_cmd) {
 		*p++ = btrtl_coex.profile_status;
 		btrtl_coex.profile_status = 0;
 		rtk_vendor_cmd_to_fw(HCI_VENDOR_SET_PROFILE_REPORT_LEGACY_COMMAND, buffer_size,
@@ -1778,8 +1778,8 @@ static void rtk_handle_cmd_complete_evt(u8 total_len, u8 * p)
 #endif
 	if (opcode == HCI_VENDOR_SET_PROFILE_REPORT_COMMAND) {
 		//0x01-unknown hci command
-		if ((*p++) == 0x01) {
-			RTKBT_DBG("unknown hci command");
+		if((*p++) == 0x01) {
+			//RTKBT_DBG("unknown hci command");
 			return;
 		} else {
 			profileinfo_cmd = 1;

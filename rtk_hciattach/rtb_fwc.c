@@ -59,9 +59,9 @@ struct rtb_cfg_item {
 } __attribute__ ((packed));
 
 struct rtk_bt_vendor_config {
-	uint32_t signature;
-	uint16_t data_len;
-	struct rtb_cfg_item entry[0];
+        uint32_t signature;
+        uint16_t data_len;
+        struct rtb_cfg_item entry[0];
 } __attribute__ ((packed));
 
 #define RTB_CFG_HDR_LEN		6
@@ -132,11 +132,11 @@ struct rtb_new_patch_hdr {
 
 //signature: Realtech
 const uint8_t RTK_EPATCH_SIGNATURE[8] =
-	{ 0x52, 0x65, 0x61, 0x6C, 0x74, 0x65, 0x63, 0x68 };
+    { 0x52, 0x65, 0x61, 0x6C, 0x74, 0x65, 0x63, 0x68 };
 
 //signature: RTBTCore
 const uint8_t RTK_EPATCH_SIGNATURE_NEW[8] =
-	{ 0x52, 0x54, 0x42, 0x54, 0x43, 0x6F, 0x72, 0x65 };
+    { 0x52, 0x54, 0x42, 0x54, 0x43, 0x6F, 0x72, 0x65 };
 
 //Extension Section IGNATURE:0x77FD0451
 const uint8_t Extension_Section_SIGNATURE[4] = { 0x51, 0x04, 0xFD, 0x77 };
@@ -1207,12 +1207,12 @@ void insert_queue_sort(struct list_head *head, struct patch_node *node)
 	struct list_head *next;
 	struct patch_node *tmp;
 
-	if (!head || !node) {
+	if(!head || !node) {
 		return;
 	}
 	list_for_each_safe(pos, next, head) {
 		tmp = list_entry(pos, struct patch_node, list);
-		if (tmp->pri >= node->pri)
+		if(tmp->pri >= node->pri)
 			break;
 	}
 	__list_add(&node->list, pos->prev, pos);
@@ -1243,7 +1243,7 @@ static int insert_patch(struct patch_node *patch_node_hdr, uint8_t *section_pos,
 				return -1;
 			}
 			tmp->pri = (uint8_t)*(pos + 1);
-			if (opcode == PATCH_SECURITY_HEADER)
+			if(opcode == PATCH_SECURITY_HEADER)
 				tmp->key_id = (uint8_t)*(pos + 1);
 
 			section_len = get_unaligned_le32(pos + 4);
@@ -1251,10 +1251,10 @@ static int insert_patch(struct patch_node *patch_node_hdr, uint8_t *section_pos,
 			*patch_len += section_len;
 			RS_INFO("Pri:%d, Patch length 0x%04x", tmp->pri, tmp->len);
 			tmp->payload = pos + 8;
-			if (opcode != PATCH_SECURITY_HEADER) {
+			if(opcode != PATCH_SECURITY_HEADER) {
 				insert_queue_sort(&(patch_node_hdr->list), tmp);
 			} else {
-				if ((rtl->key_id == tmp->key_id) && (rtl->key_id > 0)) {
+				if((rtl->key_id == tmp->key_id) && (rtl->key_id > 0)) {
 					insert_queue_sort(&(patch_node_hdr->list), tmp);
 					*sec_flag = 1;
 				} else {
@@ -1304,34 +1304,34 @@ static uint8_t *rtb_get_patch_header(int *len,
 
 		switch (section_hdr.opcode) {
 		case PATCH_SNIPPETS:
-			if (insert_patch(patch_node_hdr, section_pos, PATCH_SNIPPETS, &patch_len, 0))
+			if(insert_patch(patch_node_hdr, section_pos, PATCH_SNIPPETS, &patch_len, 0))
 				goto alloc_fail;
 			break;
 		case PATCH_SECURITY_HEADER:
-			if (!key_id)
+			if(!key_id)
 				break;
 
 			sec_flag = 0;
-			if (insert_patch(patch_node_hdr, section_pos, PATCH_SECURITY_HEADER, &patch_len, &sec_flag))
+			if(insert_patch(patch_node_hdr, section_pos, PATCH_SECURITY_HEADER, &patch_len, &sec_flag))
 				goto alloc_fail;
-			if (sec_flag)
+			if(sec_flag)
 				break;
 
 			for (i = 0; i < new_patch->number_of_section; i++) {
 				section_hdr.opcode = get_unaligned_le32(section_pos);
 				section_hdr.section_len = get_unaligned_le32(section_pos + 4);
-				if (section_hdr.opcode == PATCH_DUMMY_HEADER) {
-					if (insert_patch(patch_node_hdr, section_pos, PATCH_DUMMY_HEADER, &patch_len, 0))
+				if(section_hdr.opcode == PATCH_DUMMY_HEADER) {
+					if(insert_patch(patch_node_hdr, section_pos, PATCH_DUMMY_HEADER, &patch_len, 0))
 						goto alloc_fail;
 				}
 				section_pos += (SECTION_HEADER_SIZE + section_hdr.section_len);
 			}
 			break;
 		case PATCH_DUMMY_HEADER:
-			if (key_id) {
+			if(key_id) {
 				break;
 			}
-			if (insert_patch(patch_node_hdr, section_pos, PATCH_DUMMY_HEADER, &patch_len, 0))
+			if(insert_patch(patch_node_hdr, section_pos, PATCH_DUMMY_HEADER, &patch_len, 0))
 				goto alloc_fail;
 			break;
 		case PATCH_OTA_FLAG:
@@ -1519,11 +1519,11 @@ uint8_t *rtb_get_final_patch(int fd, int proto, int *rlen)
 	/* Entry is allocated dynamically. It should be freed later in the
 	 * function.
 	 */
-	if (memcmp(rtl->fw_buf, RTK_EPATCH_SIGNATURE_NEW, 8) == 0) {
+	if(memcmp(rtl->fw_buf, RTK_EPATCH_SIGNATURE_NEW, 8) == 0) {
 		rtb_vendor_read(fd, READ_SEC_PROJ);
 		RS_INFO("%s: key id %d", __func__, rtl->key_id);
 		rtb_get_patch_header(&len, &patch_node_hdr, rtl->fw_buf, rtl->key_id);
-		if (len == 0)
+		if(len == 0)
 			goto alloc_fail;
 		RS_INFO("len = 0x%x", len);
 		len += rtl->config_len;
@@ -1545,7 +1545,7 @@ uint8_t *rtb_get_final_patch(int fd, int proto, int *rlen)
 		free(entry);
 		goto err;
 	} else {
-		if (memcmp(rtl->fw_buf, RTK_EPATCH_SIGNATURE_NEW, 8) == 0) {
+		if(memcmp(rtl->fw_buf, RTK_EPATCH_SIGNATURE_NEW, 8) == 0) {
 			int tmp_len = 0;
 			list_for_each_safe(pos, next, &patch_node_hdr.list)
 			{

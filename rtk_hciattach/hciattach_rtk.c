@@ -44,7 +44,7 @@
 #include "hciattach.h"
 #include "hciattach_h4.h"
 
-#define RTK_VERSION "3.1.9495cb2.20230110-195934"
+#define RTK_VERSION "3.1.9495cb2.20230413-173907"
 
 #define TIMESTAMP_PR
 
@@ -1794,9 +1794,9 @@ void rtb_read_local_version(int dd)
 static int check_fw_chip_ver(int fd)
 {
 	rtb_vendor_read(fd, READ_LMP_SUB_VERSION);
-	if (rtb_cfg.lmp_subver == 0x8822) {
+	if(rtb_cfg.lmp_subver == 0x8822) {
 		rtb_vendor_read(fd, READ_CHIP_VER);
-		if (rtb_cfg.hci_rev == 0x000e) {
+		if(rtb_cfg.hci_rev == 0x000e) {
 			return 0;
 		}
 	}
@@ -1906,12 +1906,12 @@ static int rtb_config(int fd, int proto, int speed, struct termios *ti)
 		break;
 	}
 
-	if ((rtb_cfg.chip_type == CHIP_8852BPE_VR) || (rtb_cfg.chip_type == CHIP_8852BPS)) {
+	if((rtb_cfg.chip_type == CHIP_8852BPE_VR) || (rtb_cfg.chip_type == CHIP_8852BPS)) {
 		rtb_cfg.chip_type = CHIP_8852BP;
 		RS_INFO("chip_type: %d", rtb_cfg.chip_type);
 	}
 
-	if (rtb_cfg.chip_type == CHIP_8852BP) {
+	if(rtb_cfg.chip_type == CHIP_8852BP) {
 		rtb_cfg.eversion = rtb_cfg.chip_ver;
 		RS_INFO("eversion: %d", rtb_cfg.eversion);
 	}
