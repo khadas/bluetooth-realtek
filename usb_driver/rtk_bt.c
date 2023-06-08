@@ -36,13 +36,13 @@
 #include "rtk_bt.h"
 #include "rtk_misc.h"
 
-#define VERSION "3.1.f617842.20230110-195926"
+#define VERSION "3.1.6fd4e69.20220818-105856"
 
 #ifdef BTCOEX
 #include "rtk_coex.h"
 #endif
 
-#ifdef RTKBT_SWITCH_PATCH
+#if defined RTKBT_SWITCH_PATCH || defined RTKBT_SWITCH_WAKEUP
 #include <linux/semaphore.h>
 #include <net/bluetooth/hci_core.h>
 static DEFINE_SEMAPHORE(switch_sem);
@@ -162,6 +162,20 @@ static struct btusb_data *rtk_alloc(struct usb_interface *intf)
 
 MODULE_DEVICE_TABLE(usb, btusb_table);
 
+static int inc_tx(struct btusb_data *data)
+{
+	unsigned long flags;
+	int rv;
+
+	spin_lock_irqsave(&data->txlock, flags);
+	rv = test_bit(BTUSB_SUSPENDING, &data->flags);
+	if (!rv)
+		data->tx_in_flight++;
+	spin_unlock_irqrestore(&data->txlock, flags);
+
+	return rv;
+}
+
 #if HCI_VERSION_CODE >= KERNEL_VERSION(3, 18, 0)
 static inline void btusb_free_frags(struct btusb_data *data)
 {
@@ -204,11 +218,7 @@ static int btusb_recv_intr(struct btusb_data *data, void *buffer, int count)
 		}
 
 		len = min_t(uint, bt_cb(skb)->expect, count);
-#if HCI_VERSION_CODE >= KERNEL_VERSION(4, 13, 0)
-		skb_put_data(skb, buffer, len);
-#else
 		memcpy(skb_put(skb, len), buffer, len);
-#endif
 
 		count -= len;
 		buffer += len;
@@ -263,11 +273,7 @@ static int btusb_recv_bulk(struct btusb_data *data, void *buffer, int count)
 		}
 
 		len = min_t(uint, bt_cb(skb)->expect, count);
-#if HCI_VERSION_CODE >= KERNEL_VERSION(4, 13, 0)
-		skb_put_data(skb, buffer, len);
-#else
 		memcpy(skb_put(skb, len), buffer, len);
-#endif
 
 		count -= len;
 		buffer += len;
@@ -301,42 +307,10 @@ static int btusb_recv_bulk(struct btusb_data *data, void *buffer, int count)
 	return err;
 }
 
-#if HCI_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
-static int btrtl_usb_recv_isoc(u16 pos, u8 *data, u8 *p, int len,
-			u16 wMaxPacketSize)
-{
-	u8 *prev;
-
-	if (pos >= HCI_SCO_HDR_SIZE && pos >= wMaxPacketSize &&
-	    len == wMaxPacketSize && !(pos % wMaxPacketSize) &&
-	    wMaxPacketSize >= 10 && p[0] == data[0] && p[1] == data[1]) {
-
-		prev = data + (pos - wMaxPacketSize);
-
-		/* Detect the sco data of usb isoc pkt duplication. */
-		if (!memcmp(p + 2, prev + 2, 8))
-			return -EILSEQ;
-
-		if (wMaxPacketSize >= 12 &&
-		    p[2] == prev[6] && p[3] == prev[7] &&
-		    p[4] == prev[4] && p[5] == prev[5] &&
-		    p[6] == prev[10] && p[7] == prev[11] &&
-		    p[8] == prev[8] && p[9] == prev[9]) {
-			return -EILSEQ;
-		}
-	}
-
-	return 0;
-}
-#endif
-
 static int btusb_recv_isoc(struct btusb_data *data, void *buffer, int count)
 {
 	struct sk_buff *skb;
 	int err = 0;
-#if HCI_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
-	u16 wMaxPacketSize = le16_to_cpu(data->isoc_rx_ep->wMaxPacketSize);
-#endif
 
 	spin_lock(&data->rxlock);
 	skb = data->sco_skb;
@@ -356,24 +330,7 @@ static int btusb_recv_isoc(struct btusb_data *data, void *buffer, int count)
 		}
 
 		len = min_t(uint, bt_cb(skb)->expect, count);
-
-#if HCI_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
-		/* Gaps in audio could be heard while streaming WBS using USB
-		 * alt settings 3 on some platforms.
-		 * Add the function to detect it.
-		 */
-		if (test_bit(BTUSB_USE_ALT3_FOR_WBS, &data->flags)) {
-			err = btrtl_usb_recv_isoc(skb->len, skb->data, buffer,
-					len, wMaxPacketSize);
-			if (err)
-				break;
-		}
-#endif
-#if HCI_VERSION_CODE >= KERNEL_VERSION(4, 13, 0)
-		skb_put_data(skb, buffer, len);
-#else
 		memcpy(skb_put(skb, len), buffer, len);
-#endif
 
 		count -= len;
 		buffer += len;
@@ -404,21 +361,6 @@ static int btusb_recv_isoc(struct btusb_data *data, void *buffer, int count)
 
 	return err;
 }
-#else
-static int inc_tx(struct btusb_data *data)
-{
-	unsigned long flags;
-	int rv;
-
-	spin_lock_irqsave(&data->txlock, flags);
-	rv = test_bit(BTUSB_SUSPENDING, &data->flags);
-	if (!rv)
-		data->tx_in_flight++;
-	spin_unlock_irqrestore(&data->txlock, flags);
-
-	return rv;
-}
-
 #endif
 
 static void btusb_intr_complete(struct urb *urb)
@@ -698,51 +640,6 @@ retry:
 	}
 }
 
-#if HCI_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
-static inline void __fill_isoc_descriptor_msbc(struct urb *urb, int len,
-					       int mtu, struct btusb_data *data)
-{
-	int i = 0, offset = 0;
-	unsigned int interval;
-
-	BT_DBG("len %d mtu %d", len, mtu);
-
-	/* For mSBC ALT 6 settings some Realtek chips need to transmit the data
-	 * continuously without the zero length of USB packets.
-	 */
-	if (btrealtek_test_flag(data->hdev, REALTEK_ALT6_CONTINUOUS_TX_CHIP))
-		goto ignore_usb_alt6_packet_flow;
-
-	/* For mSBC ALT 6 setting the host will send the packet at continuous
-	 * flow. As per core spec 5, vol 4, part B, table 2.1. For ALT setting
-	 * 6 the HCI PACKET INTERVAL should be 7.5ms for every usb packets.
-	 * To maintain the rate we send 63bytes of usb packets alternatively for
-	 * 7ms and 8ms to maintain the rate as 7.5ms.
-	 */
-	if (data->usb_alt6_packet_flow) {
-		interval = 7;
-		data->usb_alt6_packet_flow = false;
-	} else {
-		interval = 6;
-		data->usb_alt6_packet_flow = true;
-	}
-
-	for (i = 0; i < interval; i++) {
-		urb->iso_frame_desc[i].offset = offset;
-		urb->iso_frame_desc[i].length = offset;
-	}
-
-ignore_usb_alt6_packet_flow:
-	if (len && i < BTUSB_MAX_ISOC_FRAMES) {
-		urb->iso_frame_desc[i].offset = offset;
-		urb->iso_frame_desc[i].length = len;
-		i++;
-	}
-
-	urb->number_of_packets = i;
-}
-#endif
-
 static inline void __fill_isoc_descriptor(struct urb *urb, int len, int mtu)
 {
 	int i, offset = 0;
@@ -792,12 +689,6 @@ static int btusb_submit_isoc_urb(struct hci_dev *hdev, gfp_t mem_flags)
 
 	pipe = usb_rcvisocpipe(data->udev, data->isoc_rx_ep->bEndpointAddress);
 
-#if HCI_VERSION_CODE >= KERNEL_VERSION(3, 2, 14)
-	usb_fill_int_urb(urb, data->udev, pipe, buf, size, btusb_isoc_complete,
-			 hdev, data->isoc_rx_ep->bInterval);
-
-	urb->transfer_flags = URB_FREE_BUFFER | URB_ISO_ASAP;
-#else
 	urb->dev = data->udev;
 	urb->pipe = pipe;
 	urb->context = hdev;
@@ -807,7 +698,6 @@ static int btusb_submit_isoc_urb(struct hci_dev *hdev, gfp_t mem_flags)
 	urb->transfer_flags = URB_FREE_BUFFER | URB_ISO_ASAP;
 	urb->transfer_buffer = buf;
 	urb->transfer_buffer_length = size;
-#endif
 
 	__fill_isoc_descriptor(urb, size,
 			       le16_to_cpu(data->isoc_rx_ep->wMaxPacketSize));
@@ -879,7 +769,10 @@ static int btusb_open(struct hci_dev *hdev)
 {
 	struct btusb_data *data = GET_DRV_DATA(hdev);
 	int err;
-
+#ifdef RTKBT_SWITCH_WAKEUP
+	u8 *cmd;
+	int result = 0;
+#endif
 	err = usb_autopm_get_interface(data->intf);
 	if (err < 0)
 		return err;
@@ -893,15 +786,24 @@ static int btusb_open(struct hci_dev *hdev)
 		//err = -1;
 		//goto failed;
 	}
+#ifdef RTKBT_SWITCH_WAKEUP
+	/* Clear patch */
+	cmd = kzalloc(16, GFP_ATOMIC);
+	if (!cmd) {
+		RTKBT_ERR("Can't allocate memory for cmd");
+		return -ENOMEM;
+	}
 
+	cmd[0] = 0x66;
+	cmd[1] = 0xfc;
+	cmd[2] = 0x00;
+	result = __rtk_send_hci_cmd(data->udev, cmd, 3);
+	kfree(cmd);
+#endif
 	err = download_patch(data->intf);
 	if (err < 0)
 		goto failed;
 	/*******************************/
-
-	err = setup_btrealtek_flag(data->intf, hdev);
-	if (err < 0)
-		RTKBT_WARN("setup_btrealtek_flag incorrect!");
 
 	RTKBT_INFO("%s set HCI UP RUNNING", __func__);
 	if (test_and_set_bit(HCI_UP, &hdev->flags))
@@ -1013,7 +915,7 @@ failed:
 	mdelay(URB_CANCELING_DELAY_MS);	// Added by Realtek
 	usb_scuttle_anchored_urbs(&data->deferred);
 
-#ifdef RTKBT_SWITCH_PATCH
+#if defined RTKBT_SWITCH_PATCH || defined RTKBT_SWITCH_WAKEUP
 	down(&switch_sem);
 	if (data->context) {
 		struct api_context *ctx = data->context;
@@ -1050,147 +952,6 @@ static const char pkt_ind[][8] = {
 	[HCI_SCODATA_PKT] = "sco",
 };
 
-#if HCI_VERSION_CODE >= KERNEL_VERSION(3, 18, 0)
-static struct urb *alloc_ctrl_urb(struct hci_dev *hdev, struct sk_buff *skb)
-{
-	struct btusb_data *data = hci_get_drvdata(hdev);
-	struct usb_ctrlrequest *dr;
-	struct urb *urb;
-	unsigned int pipe;
-
-	urb = usb_alloc_urb(0, GFP_KERNEL);
-	if (!urb)
-		return ERR_PTR(-ENOMEM);
-
-	dr = kmalloc(sizeof(*dr), GFP_KERNEL);
-	if (!dr) {
-		usb_free_urb(urb);
-		return ERR_PTR(-ENOMEM);
-	}
-
-	dr->bRequestType = data->cmdreq_type;
-	dr->bRequest     = 0;
-	dr->wIndex       = 0;
-	dr->wValue       = 0;
-	dr->wLength      = __cpu_to_le16(skb->len);
-
-	pipe = usb_sndctrlpipe(data->udev, 0x00);
-
-	usb_fill_control_urb(urb, data->udev, pipe, (void *)dr,
-			     skb->data, skb->len, btusb_tx_complete, skb);
-
-	skb->dev = (void *)hdev;
-
-	return urb;
-}
-
-static struct urb *alloc_bulk_urb(struct hci_dev *hdev, struct sk_buff *skb)
-{
-	struct btusb_data *data = hci_get_drvdata(hdev);
-	struct urb *urb;
-	unsigned int pipe;
-
-	if (!data->bulk_tx_ep)
-		return ERR_PTR(-ENODEV);
-
-	urb = usb_alloc_urb(0, GFP_KERNEL);
-	if (!urb)
-		return ERR_PTR(-ENOMEM);
-
-	pipe = usb_sndbulkpipe(data->udev, data->bulk_tx_ep->bEndpointAddress);
-
-	usb_fill_bulk_urb(urb, data->udev, pipe,
-			  skb->data, skb->len, btusb_tx_complete, skb);
-
-	skb->dev = (void *)hdev;
-
-	return urb;
-}
-
-static struct urb *alloc_isoc_urb(struct hci_dev *hdev, struct sk_buff *skb)
-{
-	struct btusb_data *data = hci_get_drvdata(hdev);
-	struct urb *urb;
-	unsigned int pipe;
-
-	if (!data->isoc_tx_ep)
-		return ERR_PTR(-ENODEV);
-
-	urb = usb_alloc_urb(BTUSB_MAX_ISOC_FRAMES, GFP_KERNEL);
-	if (!urb)
-		return ERR_PTR(-ENOMEM);
-
-	pipe = usb_sndisocpipe(data->udev, data->isoc_tx_ep->bEndpointAddress);
-
-	usb_fill_int_urb(urb, data->udev, pipe,
-			 skb->data, skb->len, btusb_isoc_tx_complete,
-			 skb, data->isoc_tx_ep->bInterval);
-
-	urb->transfer_flags  = URB_ISO_ASAP;
-
-#if HCI_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
-	if (data->isoc_altsetting == 6)
-		__fill_isoc_descriptor_msbc(urb, skb->len,
-				le16_to_cpu(data->isoc_tx_ep->wMaxPacketSize),
-				data);
-	else
-		__fill_isoc_descriptor(urb, skb->len,
-				le16_to_cpu(data->isoc_tx_ep->wMaxPacketSize));
-#else
-	__fill_isoc_descriptor(urb, skb->len,
-				le16_to_cpu(data->isoc_tx_ep->wMaxPacketSize));
-#endif
-
-	skb->dev = (void *)hdev;
-
-	return urb;
-}
-
-static int submit_tx_urb(struct hci_dev *hdev, struct urb *urb)
-{
-	struct btusb_data *data = hci_get_drvdata(hdev);
-	int err;
-
-	usb_anchor_urb(urb, &data->tx_anchor);
-
-	err = usb_submit_urb(urb, GFP_KERNEL);
-	if (err < 0) {
-		if (err != -EPERM && err != -ENODEV)
-			RTKBT_ERR("%s urb %p submission failed (%d)",
-				   hdev->name, urb, -err);
-		kfree(urb->setup_packet);
-		usb_unanchor_urb(urb);
-	} else {
-		usb_mark_last_busy(data->udev);
-	}
-
-	usb_free_urb(urb);
-	return err;
-}
-
-static int submit_or_queue_tx_urb(struct hci_dev *hdev, struct urb *urb)
-{
-	struct btusb_data *data = hci_get_drvdata(hdev);
-	unsigned long flags;
-	bool suspending;
-
-	spin_lock_irqsave(&data->txlock, flags);
-	suspending = test_bit(BTUSB_SUSPENDING, &data->flags);
-	if (!suspending)
-		data->tx_in_flight++;
-	spin_unlock_irqrestore(&data->txlock, flags);
-
-	if (!suspending)
-		return submit_tx_urb(hdev, urb);
-
-	usb_anchor_urb(urb, &data->deferred);
-	schedule_work(&data->waker);
-
-	usb_free_urb(urb);
-	return 0;
-}
-
-#endif
 #if HCI_VERSION_CODE >= KERNEL_VERSION(3, 13, 0)
 int btusb_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
 {
@@ -1200,20 +961,14 @@ int btusb_send_frame(struct sk_buff *skb)
 	struct hci_dev *hdev = (struct hci_dev *)skb->dev;
 #endif
 
-	struct urb *urb;
-#if HCI_VERSION_CODE < KERNEL_VERSION(3, 18, 0)
 	struct btusb_data *data = GET_DRV_DATA(hdev);
 	struct usb_ctrlrequest *dr;
+	struct urb *urb;
 	unsigned int pipe;
 	int err;
-#endif
 
-//	RTKBT_DBG("%s", hdev->name);
+	//RTKBT_DBG("%s", hdev->name);
 
-	/* After Kernel version 4.4.0, move the check into the
-	 * hci_send_frame function before calling hdev->send
-	 */
-#if HCI_VERSION_CODE < KERNEL_VERSION(4, 4, 0)
 	if (!test_bit(HCI_RUNNING, &hdev->flags)) {
 		/* If the parameter is wrong, the hdev isn't the correct
 		 * one. Then no HCI commands can be sent.
@@ -1221,15 +976,13 @@ int btusb_send_frame(struct sk_buff *skb)
 		RTKBT_ERR("HCI is not running");
 		return -EBUSY;
 	}
-#endif
 
 	/* Before kernel/hci version 3.13.0, the skb->dev is set before
 	 * entering btusb_send_frame(). So there is no need to set it here.
 	 *
 	 * The skb->dev will be used in the callbacks when urb transfer
 	 * completes. See btusb_tx_complete() and btusb_isoc_tx_complete() */
-#if HCI_VERSION_CODE >= KERNEL_VERSION(3, 13, 0) && \
-	HCI_VERSION_CODE < KERNEL_VERSION(3, 18, 0)
+#if HCI_VERSION_CODE >= KERNEL_VERSION(3, 13, 0)
 	skb->dev = (void *)hdev;
 #endif
 
@@ -1240,14 +993,6 @@ int btusb_send_frame(struct sk_buff *skb)
 #ifdef BTCOEX
 		rtk_btcoex_parse_cmd(skb->data, skb->len);
 #endif
-#if HCI_VERSION_CODE >= KERNEL_VERSION(3, 18, 0)
-		urb = alloc_ctrl_urb(hdev, skb);
-		if (IS_ERR(urb))
-			return PTR_ERR(urb);
-
-		hdev->stat.cmd_tx++;
-		return submit_or_queue_tx_urb(hdev, urb);
-#else
 		urb = usb_alloc_urb(0, GFP_ATOMIC);
 		if (!urb)
 			return -ENOMEM;
@@ -1273,20 +1018,11 @@ int btusb_send_frame(struct sk_buff *skb)
 		hdev->stat.cmd_tx++;
 		break;
 
-#endif
 	case HCI_ACLDATA_PKT:
 		print_acl(skb, 1);
 #ifdef BTCOEX
 		rtk_btcoex_parse_l2cap_data_tx(skb->data, skb->len);
 #endif
-#if HCI_VERSION_CODE >= KERNEL_VERSION(3, 18, 0)
-		urb = alloc_bulk_urb(hdev, skb);
-		if (IS_ERR(urb))
-			return PTR_ERR(urb);
-
-		hdev->stat.acl_tx++;
-		return submit_or_queue_tx_urb(hdev, urb);
-#else
 		if (!data->bulk_tx_ep)
 			return -ENODEV;
 
@@ -1303,22 +1039,7 @@ int btusb_send_frame(struct sk_buff *skb)
 		hdev->stat.acl_tx++;
 		break;
 
-#endif
 	case HCI_SCODATA_PKT:
-#if HCI_VERSION_CODE >= KERNEL_VERSION(3, 18, 0)
-		if (hci_conn_num(hdev, SCO_LINK) < 1)
-			return -ENODEV;
-
-		urb = alloc_isoc_urb(hdev, skb);
-		if (IS_ERR(urb))
-			return PTR_ERR(urb);
-
-		hdev->stat.sco_tx++;
-		return submit_tx_urb(hdev, urb);
-	}
-
-	return -EILSEQ;
-#else
 		if (!data->isoc_tx_ep || SCO_NUM < 1)
 			return -ENODEV;
 
@@ -1344,7 +1065,6 @@ int btusb_send_frame(struct sk_buff *skb)
 
 	default:
 		return -EILSEQ;
-
 	}
 
 	err = inc_tx(data);
@@ -1367,13 +1087,11 @@ skip_waking:
 	} else {
 		usb_mark_last_busy(data->udev);
 	}
+	usb_free_urb(urb);
 
 done:
-	usb_free_urb(urb);
 	return err;
-#endif
 }
-
 
 #if HCI_VERSION_CODE < KERNEL_VERSION(3, 4, 0)
 static void btusb_destruct(struct hci_dev *hdev)
@@ -1493,9 +1211,6 @@ static struct usb_host_interface *btusb_find_altsetting(struct btusb_data *data,
 
 	BT_DBG("Looking for Alt no :%d", alt);
 
-	if (!intf)
-		return NULL;
-
 	for (i = 0; i < intf->num_altsetting; i++) {
 		if (intf->altsetting[i].desc.bAlternateSetting == alt)
 			return &intf->altsetting[i];
@@ -1536,14 +1251,7 @@ static void btusb_work(struct work_struct *work)
 				new_alts = data->sco_num;
 			}
 		} else if (data->air_mode == HCI_NOTIFY_ENABLE_SCO_TRANSP) {
-			if (btusb_find_altsetting(data, 6))
-				new_alts = 6;
-			else if (btusb_find_altsetting(data, 3) &&
-				 hdev->sco_mtu >= 72 &&
-				 test_bit(BTUSB_USE_ALT3_FOR_WBS, &data->flags))
-				new_alts = 3;
-			else
-				new_alts = 1;
+			new_alts = btusb_find_altsetting(data, 6) ? 6 : 1;
 		}
 
 		if (btusb_switch_alt_setting(hdev, new_alts) < 0)
@@ -1743,7 +1451,7 @@ static int rtkbt_pm_notify(struct notifier_block *notifier,
 		result = __rtk_send_hci_cmd(udev, cmd, 3);
 		kfree(cmd);
 		msleep(100); /* From FW colleague's recommendation */
-		result = download_special_patch(intf, "lps_");
+		result = download_lps_patch(intf);
 #endif
 
 #ifdef RTKBT_TV_POWERON_WHITELIST
@@ -1828,8 +1536,13 @@ static int rtkbt_shutdown_notify(struct notifier_block *notifier,
 	struct usb_device *udev;
 	struct usb_interface *intf;
 	struct hci_dev *hdev;
+#ifdef RTKBT_SWITCH_WAKEUP
 	/* int err; */
-
+	int result = 0;
+	u8 *cmd;
+	static u8 hci_state = 0;
+	struct api_context ctx;
+#endif
 	data = container_of(notifier, struct btusb_data, shutdown_notifier);
 	udev = data->udev;
 	intf = data->intf;
@@ -1840,7 +1553,45 @@ static int rtkbt_shutdown_notify(struct notifier_block *notifier,
 	case SYS_POWER_OFF:
 	case SYS_RESTART:
 #ifdef RTKBT_SHUTDOWN_WAKEUP
-		RTKBT_DBG("%s: power off", __func__);
+#ifdef RTKBT_SWITCH_WAKEUP
+		if (test_bit(HCI_UP, &hdev->flags)) {
+			unsigned long expire;
+
+			init_completion(&ctx.done);
+			hci_state = 1;
+
+			down(&switch_sem);
+			data->context = &ctx;
+			ctx.flags = RTLBT_CLOSE;
+			queue_work(hdev->req_workqueue, &hdev->power_off.work);
+			up(&switch_sem);
+
+			expire = msecs_to_jiffies(3000);
+			if (!wait_for_completion_timeout(&ctx.done, expire))
+				RTKBT_ERR("hdev close timeout");
+
+			down(&switch_sem);
+			data->context = NULL;
+			up(&switch_sem);
+		}
+
+		cmd = kzalloc(16, GFP_ATOMIC);
+		if (!cmd) {
+			RTKBT_ERR("Can't allocate memory for cmd");
+			return -ENOMEM;
+		}
+
+		/* Clear patch */
+		cmd[0] = 0x66;
+		cmd[1] = 0xfc;
+		cmd[2] = 0x00;
+
+		result = __rtk_send_hci_cmd(udev, cmd, 3);
+		kfree(cmd);
+		msleep(100); /* From FW colleague's recommendation */
+		result = download_pkw_patch(intf);
+
+#endif
 		set_scan(intf);
 #endif
 		break;
@@ -1965,11 +1716,6 @@ static int btusb_probe(struct usb_interface *intf,
 	hdev->driver_data = data;
 	hdev->destruct = btusb_destruct;
 	hdev->owner = THIS_MODULE;
-#endif
-
-#if HCI_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
-	set_bit(BTUSB_USE_ALT3_FOR_WBS, &data->flags);
-	set_bit(HCI_QUIRK_WIDEBAND_SPEECH_SUPPORTED, &hdev->quirks);
 #endif
 
 #if HCI_VERSION_CODE >= KERNEL_VERSION(3, 7, 1)

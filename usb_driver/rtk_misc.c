@@ -106,15 +106,12 @@ static struct list_head list_extracfgs;
 #define ROM_LMP_8761a               0X8761
 #define ROM_LMP_8822b               0X8822
 #define ROM_LMP_8852a               0x8852
-#define ROM_LMP_8851b               0x8851
 
 #define PATCH_SNIPPETS		0x01
 #define PATCH_DUMMY_HEADER	0x02
 #define PATCH_SECURITY_HEADER	0x03
 #define PATCH_OTA_FLAG		0x04
 #define SECTION_HEADER_SIZE	8
-
-MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);
 
 struct rtk_eversion_evt {
 	uint8_t status;
@@ -215,9 +212,6 @@ static uint16_t project_id[] = {
 	ROM_LMP_NONE,
 	ROM_LMP_NONE,
 	ROM_LMP_8822b, /* index 33 for 8822EU */
-	ROM_LMP_NONE,
-	ROM_LMP_NONE,
-	ROM_LMP_8851b, /* index 36 for 8851BU */
 };
 
 enum rtk_endpoit {
@@ -239,7 +233,6 @@ enum rtk_endpoit {
 #define RTL8852BU	0x77
 #define RTL8852CU	0x78
 #define RTL8822EU	0x79
-#define RTL8851BU	0x7A
 
 typedef struct {
 	uint16_t prod_id;
@@ -474,7 +467,6 @@ static patch_info fw_patch_table[] = {
 	{0x1670, 0x8852, "mp_rtl8852bu_fw", "rtl8852bu_fw", "rtl8852bu_config", RTL8852BU}, /* RTL8852BE */
 
 	{0xc85a, 0x8852, "mp_rtl8852cu_fw", "rtl8852cu_fw", "rtl8852cu_config", RTL8852CU}, /* RTL8852CU */
-	{0xc85d, 0x8852, "mp_rtl8852cu_fw", "rtl8852cu_fw", "rtl8852cu_config", RTL8852CU}, /* RTL8852CU */
 	{0x0852, 0x8852, "mp_rtl8852cu_fw", "rtl8852cu_fw", "rtl8852cu_config", RTL8852CU}, /* RTL8852CE */
 	{0x5852, 0x8852, "mp_rtl8852cu_fw", "rtl8852cu_fw", "rtl8852cu_config", RTL8852CU}, /* RTL8852CE */
 	{0xc85c, 0x8852, "mp_rtl8852cu_fw", "rtl8852cu_fw", "rtl8852cu_config", RTL8852CU}, /* RTL8852CE */
@@ -485,8 +477,6 @@ static patch_info fw_patch_table[] = {
 
 	{0xe822, 0x8822, "mp_rtl8822eu_fw", "rtl8822eu_fw", "rtl8822eu_config", RTL8822EU}, /* RTL8822EU */
 	{0xa82a, 0x8822, "mp_rtl8822eu_fw", "rtl8822eu_fw", "rtl8822eu_config", RTL8822EU}, /* RTL8822EU */
-
-	{0xb851, 0x8851, "mp_rtl8851bu_fw", "rtl8851bu_fw", "rtl8851bu_config", RTL8851BU}, /* RTL8851BU */
 
 /* NOTE: must append patch entries above the null entry */
 	{0, 0, NULL, NULL, NULL, 0}
@@ -519,7 +509,7 @@ static void util_hexdump(const u8 *buf, size_t len)
 	}
 }
 
-#if defined RTKBT_SWITCH_PATCH || defined RTKBT_TV_POWERON_WHITELIST
+#if defined RTKBT_SWITCH_PATCH || defined RTKBT_TV_POWERON_WHITELIST  || defined RTKBT_SWITCH_WAKEUP
 int __rtk_send_hci_cmd(struct usb_device *udev, u8 *buf, u16 size)
 {
 	int result;
@@ -633,6 +623,7 @@ static void config_process(u8 *buff, int len)
 	}
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 15, 0)
 static void config_file_proc(const char *path)
 {
 	int size;
@@ -670,6 +661,7 @@ static void config_file_proc(const char *path)
 	tbuf[rc++] = '\0';
 	config_process(tbuf, rc);
 }
+#endif
 
 int patch_add(struct usb_interface *intf)
 {
@@ -782,7 +774,6 @@ static inline int get_max_patch_size(u8 chip_type)
 		max_patch_size = 0xC4Cf + 529; /* 49.2KB */
 		break;
 	case RTL8852BU:
-	case RTL8851BU:
 		max_patch_size = 0x104D0 + 529;  /* 65KB */
 		break;
 	case RTL8852CU:
@@ -806,9 +797,9 @@ static int check_fw_chip_ver(dev_data * dev_entry, xchange_data * xdata)
 	uint16_t chip_ver = 0;
 
 	chip = rtk_vendor_read(dev_entry, READ_CHIP_TYPE);
-	if (chip == 0x8822) {
+	if(chip == 0x8822) {
 		chip_ver = rtk_vendor_read(dev_entry, READ_CHIP_VER);
-		if (chip_ver == 0x000e) {
+		if(chip_ver == 0x000e) {
 			return 0;
 		}
 	}
@@ -913,12 +904,121 @@ patch_end:
 	return ret_val;
 }
 
+#ifdef RTKBT_SWITCH_WAKEUP
+/* * -1: error
+ * 0: download patch successfully
+ * >0: patch already exists  */
+int download_pkw_patch(struct usb_interface *intf)
+{
+	dev_data *dev_entry;
+	patch_info *pinfo;
+	xchange_data *xdata = NULL;
+	uint8_t *fw_buf;
+	int result;
+	char name1[64];
+	char *origin_name1;
+	char name2[64];
+	char *origin_name2;
+	int max_patch_size = 0;
+
+	RTKBT_DBG("Download power key wakeup Patch start");
+	dev_entry = dev_data_find(intf);
+	if (!dev_entry) {
+		RTKBT_ERR("No Patch found");
+		return -1;
+	}
+
+	xdata = kzalloc(sizeof(xchange_data), GFP_KERNEL);
+	if (!xdata) {
+		RTKBT_ERR("Couldn't alloc xdata");
+		return -1;
+	}
+
+	init_xdata(xdata, dev_entry);
+
+	result = check_fw_version(xdata);
+	if (result < 0) {
+		RTKBT_ERR("Failed to get Local Version Information");
+		goto patch_end;
+
+	} else if (result > 0) {
+		RTKBT_DBG("Firmware already exists");
+		/* Patch alread exists, just return */
+		if (gEVersion == 0xff) {
+			RTKBT_DBG("global_version is not set, get it!");
+			gEVersion = rtk_get_eversion(dev_entry);
+		}
+		goto patch_end;
+	}
+
+	origin_name1 = dev_entry->patch_entry->patch_name;
+	origin_name2 = dev_entry->patch_entry->config_name;
+	snprintf(name1, sizeof(name1), "pkw_%s", origin_name1);
+	snprintf(name2, sizeof(name2), "pkw_%s", origin_name2);
+	dev_entry->patch_entry->patch_name = name1;
+	dev_entry->patch_entry->config_name = name2;
+	RTKBT_INFO("Loading %s and %s", name1, name2);
+	xdata->fw_len = load_firmware(dev_entry, &xdata->fw_data);
+	dev_entry->patch_entry->patch_name = origin_name1;
+	dev_entry->patch_entry->config_name = origin_name2;
+	if (xdata->fw_len <= 0) {
+		result = -1;
+		RTKBT_ERR("load firmware failed!");
+		goto patch_end;
+	}
+
+	fw_buf = xdata->fw_data;
+
+	pinfo = dev_entry->patch_entry;
+	if (!pinfo) {
+		RTKBT_ERR("%s: No patch entry", __func__);
+		result = -1;
+		goto patch_fail;
+	}
+	max_patch_size = get_max_patch_size(pinfo->chip_type);
+	if (xdata->fw_len > max_patch_size) {
+		result = -1;
+		RTKBT_ERR("FW/CONFIG total length larger than allowed %d",
+			  max_patch_size);
+		goto patch_fail;
+	}
+
+	result = download_data(xdata);
+	if (result < 0) {
+		RTKBT_ERR("download_data failed, err %d", result);
+		goto patch_fail;
+	}
+
+	result = check_fw_version(xdata);
+	if (result <= 0) {
+		RTKBT_ERR("%s: Read Local Version Info failure after download",
+			  __func__);
+		result = -1;
+		goto patch_fail;
+	}
+
+	result = 0;
+
+patch_fail:
+	kfree(fw_buf);
+patch_end:
+	if (xdata->send_pkt)
+		kfree(xdata->send_pkt);
+	if (xdata->rcv_pkt)
+		kfree(xdata->rcv_pkt);
+	kfree(xdata);
+	RTKBT_DBG("Download power key wakeup Patch end %d", result);
+
+	return result;
+}
+#endif
+
 #ifdef RTKBT_SWITCH_PATCH
 /* @return:
  * -1: error
  * 0: download patch successfully
  * >0: patch already exists  */
-int download_special_patch(struct usb_interface *intf, const char *special_name)
+int download_lps_patch(struct usb_interface *intf)
 {
 	dev_data *dev_entry;
 	patch_info *pinfo;
@@ -960,14 +1060,11 @@ int download_special_patch(struct usb_interface *intf, const char *special_name)
 		}
 		goto patch_end;
 	}
-	memset(name1, 0, sizeof(name1));
-	memset(name2, 0, sizeof(name2));
+
 	origin_name1 = dev_entry->patch_entry->patch_name;
 	origin_name2 = dev_entry->patch_entry->config_name;
-	memcpy(name1, special_name, strlen(special_name));
-	strncat(name1, origin_name1, sizeof(name1) - 1 - strlen(special_name));
-	memcpy(name2, special_name, strlen(special_name));
-	strncat(name2, origin_name2, sizeof(name2) - 1 - strlen(special_name));
+	snprintf(name1, sizeof(name1), "lps_%s", origin_name1);
+	snprintf(name2, sizeof(name2), "lps_%s", origin_name2);
 	dev_entry->patch_entry->patch_name = name1;
 	dev_entry->patch_entry->config_name = name2;
 	RTKBT_INFO("Loading %s and %s", name1, name2);
@@ -1025,39 +1122,6 @@ patch_end:
 	return result;
 }
 #endif
-
-int setup_btrealtek_flag(struct usb_interface *intf, struct hci_dev *hdev)
-{
-	dev_data *dev_entry;
-	patch_info *pinfo;
-	int ret_val = 0;
-
-	dev_entry = dev_data_find(intf);
-	if (NULL == dev_entry) {
-		ret_val = -1;
-		RTKBT_ERR("%s: NULL == dev_entry", __func__);
-		return ret_val;
-	}
-
-	pinfo = dev_entry->patch_entry;
-	if (!pinfo) {
-		RTKBT_ERR("%s: No patch entry", __func__);
-		ret_val = -1;
-		return ret_val;
-	}
-
-	switch (pinfo->chip_type) {
-	case RTL8852CU:
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
-		btrealtek_set_flag(hdev, REALTEK_ALT6_CONTINUOUS_TX_CHIP);
-#endif
-		break;
-	default:
-		break;
-	}
-
-	return ret_val;
-}
 
 #if defined RTKBT_SUSPEND_WAKEUP || defined RTKBT_SHUTDOWN_WAKEUP || defined RTKBT_SWITCH_PATCH
 int set_scan(struct usb_interface *intf)
@@ -1160,7 +1224,6 @@ static int is_mac(u8 chip_type, u16 offset)
 	case RTL8852BU:
 	case RTL8852CU:
 	case RTL8822EU:
-	case RTL8851BU:
 		if (offset == 0x0030)
 			return 1;
 		break;
@@ -1187,7 +1250,6 @@ static uint16_t get_mac_offset(u8 chip_type)
 	case RTL8852BU:
 	case RTL8852CU:
 	case RTL8822EU:
-	case RTL8851BU:
 		return 0x0030;
 	case RTLPREVIOUS:
 		return 0x003c;
@@ -1383,12 +1445,12 @@ static void insert_queue_sort(struct list_head *head, struct patch_node *node)
 	struct list_head *next;
 	struct patch_node *tmp;
 
-	if (!head || !node) {
+	if(!head || !node) {
 		return;
 	}
 	list_for_each_safe(pos, next, head) {
 		tmp = list_entry(pos, struct patch_node, list);
-		if (tmp->pri >= node->pri)
+		if(tmp->pri >= node->pri)
 			break;
 	}
 	__list_add(&node->list, pos->prev, pos);
@@ -1414,7 +1476,7 @@ static int insert_patch(struct patch_node *patch_node_hdr, uint8_t *section_pos,
 		if (eco == gEVersion + 1) {
 			tmp = (struct patch_node*)kzalloc(sizeof(struct patch_node), GFP_KERNEL);
 			tmp->pri = (uint8_t)*(pos + 1);
-			if (opcode == PATCH_SECURITY_HEADER)
+			if(opcode == PATCH_SECURITY_HEADER)
 				tmp->key_id = (uint8_t)*(pos + 1);
 
 			section_len = get_unaligned_le32(pos + 4);
@@ -1422,10 +1484,10 @@ static int insert_patch(struct patch_node *patch_node_hdr, uint8_t *section_pos,
 			*patch_len += section_len;
 			RTKBT_DBG("Pri:%d, Patch length 0x%04x", tmp->pri, tmp->len);
 			tmp->payload = pos + 8;
-			if (opcode != PATCH_SECURITY_HEADER) {
+			if(opcode != PATCH_SECURITY_HEADER) {
 				insert_queue_sort(&(patch_node_hdr->list), tmp);
 			} else {
-				if ((g_key_id == tmp->key_id) && (g_key_id > 0)) {
+				if((g_key_id == tmp->key_id) && (g_key_id > 0)) {
 					insert_queue_sort(&(patch_node_hdr->list), tmp);
 					*sec_flag = 1;
 				} else {
@@ -1479,25 +1541,25 @@ static uint8_t *rtb_get_patch_header(int *len,
 			insert_patch(patch_node_hdr, section_pos, PATCH_SNIPPETS, &patch_len, NULL);
 			break;
 		case PATCH_SECURITY_HEADER:
-			if (!g_key_id)
+			if(!g_key_id)
 				break;
 
 			sec_flag = 0;
 			insert_patch(patch_node_hdr, section_pos, PATCH_SECURITY_HEADER, &patch_len, &sec_flag);
-			if (sec_flag)
+			if(sec_flag)
 				break;
 
 			for (i = 0; i < number_of_section; i++) {
 				section_hdr.opcode = get_unaligned_le32(section_pos);
 				section_hdr.section_len = get_unaligned_le32(section_pos + 4);
-				if (section_hdr.opcode == PATCH_DUMMY_HEADER) {
+				if(section_hdr.opcode == PATCH_DUMMY_HEADER) {
 					insert_patch(patch_node_hdr, section_pos, PATCH_DUMMY_HEADER, &patch_len, NULL);
 				}
 				section_pos += (SECTION_HEADER_SIZE + section_hdr.section_len);
 			}
 			break;
 		case PATCH_DUMMY_HEADER:
-			if (g_key_id) {
+			if(g_key_id) {
 				break;
 			}
 			insert_patch(patch_node_hdr, section_pos, PATCH_DUMMY_HEADER, &patch_len, NULL);
@@ -1515,12 +1577,14 @@ static uint8_t *rtb_get_patch_header(int *len,
 			}
 			break;
 		default:
-			RTKBT_ERR("Unknown Opcode");
+			RTKBT_ERR("Wrong Opcode");
+			goto wrong_opcode;
 		}
 		section_pos += (SECTION_HEADER_SIZE + section_hdr.section_len);
 	}
 	*len = patch_len;
 
+wrong_opcode:
 	return NULL;
 }
 
@@ -1609,6 +1673,9 @@ static int bachk(const char *str)
 
 static int request_bdaddr(u8 *buf)
 {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
+	return -1;
+#else
 	int size;
 	int rc;
 	struct file *file;
@@ -1663,6 +1730,7 @@ static int request_bdaddr(u8 *buf)
 	return size;
 fail:
 	return rc;
+#endif
 }
 
 static u8 *load_config(dev_data *dev_entry, int *length)
@@ -1686,7 +1754,7 @@ static u8 *load_config(dev_data *dev_entry, int *length)
 	patch_entry = dev_entry->patch_entry;
 	udev = dev_entry->udev;
 	chip_type = patch_entry->chip_type;
-
+	
 	sprintf(config_name, "rtlbt/%s", patch_entry->config_name);
 	RTKBT_INFO("config filename %s", config_name);
 	result = request_firmware(&fw, config_name, &udev->dev);
@@ -1696,8 +1764,10 @@ static u8 *load_config(dev_data *dev_entry, int *length)
 	file_sz = fw->size;
 	buf = (u8 *)fw->data;
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 15, 0)
 	/* Load extra configs */
 	config_file_proc(EXTRA_CONFIG_FILE);
+#endif
 	list_for_each_safe(pos, next, &list_extracfgs) {
 		n = list_entry(pos, struct cfg_list_item, list);
 		RTKBT_INFO("extra cfg: ofs %04x, len %u", n->offset, n->len);
@@ -1851,7 +1921,7 @@ static int rtk_vendor_read(dev_data * dev_entry, uint8_t class)
 	}
 
 	patch_entry = xdata->dev_entry->patch_entry;
-	if (class == READ_SEC_PROJ) {
+	if(class == READ_SEC_PROJ){
 		sec_proj = (struct rtk_security_proj_evt *)(xdata->rsp_para);
 		RTKBT_DBG("sec_proj->status = 0x%x, sec_proj->key_id = 0x%x",
 		  sec_proj->status, sec_proj->key_id);
@@ -1871,6 +1941,7 @@ static int rtk_vendor_read(dev_data * dev_entry, uint8_t class)
 			ret_val = chip_type->chip;
 		}
 	}
+
 
 read_end:
 	if (xdata != NULL) {
@@ -1981,7 +2052,7 @@ int load_firmware(dev_data * dev_entry, uint8_t ** buff)
 				    ("lmp_version is %x, project_id is %x, match!",
 				     lmp_version, project_id[proj_id]);
 
-				if (memcmp(epatch_buf, RTK_EPATCH_SIGNATURE_NEW, 8) == 0) {
+				if(memcmp(epatch_buf, RTK_EPATCH_SIGNATURE_NEW, 8) == 0) {
 					int key_id = rtk_vendor_read(dev_entry, READ_SEC_PROJ);
 					RTKBT_DBG("%s: key id %d", __func__, key_id);
 					if (key_id < 0) {
@@ -1991,7 +2062,7 @@ int load_firmware(dev_data * dev_entry, uint8_t ** buff)
 						goto alloc_fail;
 					}
 					rtb_get_patch_header(&buf_len, &patch_node_hdr, epatch_buf, key_id);
-					if (buf_len == 0)
+					if(buf_len == 0)
 						goto alloc_fail;
 					RTKBT_DBG("buf_len = 0x%x", buf_len);
 					buf_len += config_len;
@@ -2010,7 +2081,7 @@ int load_firmware(dev_data * dev_entry, uint8_t ** buff)
 					    ("Can't alloc memory for multi fw&config");
 					buf_len = -1;
 				} else {
-					if (memcmp(epatch_buf, RTK_EPATCH_SIGNATURE_NEW, 8) == 0) {
+					if(memcmp(epatch_buf, RTK_EPATCH_SIGNATURE_NEW, 8) == 0) {
 						int tmp_len = 0;
 						list_for_each_safe(pos, next, &patch_node_hdr.list)
 						{
@@ -2209,7 +2280,7 @@ int download_data(xchange_data * xdata)
 	uint8_t *pcur;
 	int pkt_len, frag_num, frag_len;
 	int i, ret_val;
-	int j = 0;
+	int j;
 
 	RTKBT_DBG("download_data start");
 
@@ -2221,11 +2292,12 @@ int download_data(xchange_data * xdata)
 	frag_len = PATCH_SEG_MAX;
 
 	for (i = 0; i < frag_num; i++) {
-		cmd_para->index = j++;
+		if (i > 0x7f)
+			j = (i & 0x7f) + 1;
+		else
+			j = i;
 
-		if (cmd_para->index == 0x7f)
-			j = 1;
-
+		cmd_para->index = j;
 		if (i == (frag_num - 1)) {
 			cmd_para->index |= DATA_END;
 			frag_len = xdata->fw_len % PATCH_SEG_MAX;

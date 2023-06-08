@@ -36,7 +36,10 @@
 /* Note that it's necessary to apply TV FW Patch. */
 /* #define RTKBT_SUSPEND_WAKEUP */
 /* #define RTKBT_SHUTDOWN_WAKEUP */
-#define RTKBT_POWERKEY_WAKEUP
+/* #define RTKBT_POWERKEY_WAKEUP */
+#define RTKBT_SUSPEND_WAKEUP
+#define RTKBT_SHUTDOWN_WAKEUP
+#define RTKBT_SWITCH_WAKEUP
 
 /* RTKBT Power-on Whitelist for sideband wake-up by LE Advertising from Remote.
  * Note that it's necessary to apply TV FW Patch. */
@@ -82,53 +85,27 @@ extern void print_event(struct sk_buff *skb);
 extern void print_command(struct sk_buff *skb);
 extern void print_acl(struct sk_buff *skb, int dataOut);
 
-#if defined RTKBT_SWITCH_PATCH || defined RTKBT_TV_POWERON_WHITELIST
+#if defined RTKBT_SWITCH_PATCH || defined RTKBT_TV_POWERON_WHITELIST || defined RTKBT_SWITCH_WAKEUP
 int __rtk_send_hci_cmd(struct usb_device *udev, u8 *buf, u16 size);
 #endif
 
 #ifdef RTKBT_SWITCH_PATCH
+int download_lps_patch(struct usb_interface *intf);
+#endif
+
+#ifdef RTKBT_SWITCH_WAKEUP
+int download_pkw_patch(struct usb_interface *intf);
+#endif
+
+#if defined RTKBT_SWITCH_PATCH  || defined RTKBT_SWITCH_WAKEUP
 #define RTLBT_CLOSE	(1 << 0)
 struct api_context {
 	u32			flags;
 	struct completion	done;
 	int			status;
 };
-
-int download_special_patch(struct usb_interface *intf, const char *special_name);
 #endif
 
-int setup_btrealtek_flag(struct usb_interface *intf, struct hci_dev *hdev);
-
-enum {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
-	REALTEK_ALT6_CONTINUOUS_TX_CHIP,
-#endif
-
-	__REALTEK_NUM_FLAGS,
-};
-
-struct btrealtek_data {
-	DECLARE_BITMAP(flags, __REALTEK_NUM_FLAGS);
-};
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 15, 0)
-static inline void *hci_get_priv(struct hci_dev *hdev)
-{
-	return (char *)hdev + sizeof(*hdev);
-}
-#endif
-
-#define btrealtek_set_flag(hdev, nr)					\
-	do {								\
-		struct btrealtek_data *realtek = hci_get_priv((hdev));	\
-		set_bit((nr), realtek->flags);				\
-	} while (0)
-
-#define btrealtek_get_flag(hdev)						\
-	(((struct btrealtek_data *)hci_get_priv(hdev))->flags)
-
-#define btrealtek_test_flag(hdev, nr)	test_bit((nr), btrealtek_get_flag(hdev))
-
-#if defined RTKBT_SUSPEND_WAKEUP || defined RTKBT_SHUTDOWN_WAKEUP || defined RTKBT_SWITCH_PATCH
+#if defined RTKBT_SUSPEND_WAKEUP || defined RTKBT_SHUTDOWN_WAKEUP || defined RTKBT_SWITCH_PATCH || defined RTKBT_SWITCH_WAKEUP
 int set_scan(struct usb_interface *intf);
 #endif
