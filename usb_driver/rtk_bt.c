@@ -36,7 +36,7 @@
 #include "rtk_bt.h"
 #include "rtk_misc.h"
 
-#define VERSION "3.1.6fd4e69.20220818-105856"
+#define VERSION "3.1.4a6937d.20230413-173859"
 
 #ifdef BTCOEX
 #include "rtk_coex.h"
@@ -769,9 +769,11 @@ static int btusb_open(struct hci_dev *hdev)
 {
 	struct btusb_data *data = GET_DRV_DATA(hdev);
 	int err;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 15, 0)
 #ifdef RTKBT_SWITCH_WAKEUP
 	u8 *cmd;
 	int result = 0;
+#endif
 #endif
 	err = usb_autopm_get_interface(data->intf);
 	if (err < 0)
@@ -786,6 +788,7 @@ static int btusb_open(struct hci_dev *hdev)
 		//err = -1;
 		//goto failed;
 	}
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 15, 0)
 #ifdef RTKBT_SWITCH_WAKEUP
 	/* Clear patch */
 	cmd = kzalloc(16, GFP_ATOMIC);
@@ -799,6 +802,7 @@ static int btusb_open(struct hci_dev *hdev)
 	cmd[2] = 0x00;
 	result = __rtk_send_hci_cmd(data->udev, cmd, 3);
 	kfree(cmd);
+#endif
 #endif
 	err = download_patch(data->intf);
 	if (err < 0)
