@@ -46,7 +46,7 @@
 /* #define RTKBT_TV_POWERON_WHITELIST */
 
 #if 1
-#define RTKBT_DBG(fmt, arg...) printk(KERN_INFO "rtk_btusb: " fmt "\n" , ## arg)
+#define RTKBT_DBG(fmt, arg...) printk(KERN_DEBUG "rtk_btusb: " fmt "\n" , ## arg)
 #define RTKBT_INFO(fmt, arg...) printk(KERN_INFO "rtk_btusb: " fmt "\n" , ## arg)
 #define RTKBT_WARN(fmt, arg...) printk(KERN_WARNING "rtk_btusb: " fmt "\n", ## arg)
 #else
